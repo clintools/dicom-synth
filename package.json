@@ -5,12 +5,26 @@
   "license": "Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@11.3.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/clintools/dicom-synth.git"
+  },
+  "keywords": [
+    "dicom",
+    "synthetic",
+    "test-data",
+    "medical-imaging"
+  ],
   "engines": {
     "node": ">=20"
   },
   "main": "dist/esm/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/types/index.d.ts",
+  "bin": {
+    "dicom-synth-write": "./bin/dicom-synth-write.mjs",
+    "dicom-synth-fetch": "./bin/dicom-synth-fetch.mjs"
+  },
   "exports": {
     ".": {
       "import": "./dist/esm/index.js",
@@ -20,7 +34,9 @@
     "./public-cases.json": "./data/public-cases.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "data/public-cases.json",
+    "bin"
   ],
   "scripts": {
     "prepare": "husky",
