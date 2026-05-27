@@ -1,0 +1,67 @@
+{
+  "name": "dicom-synth",
+  "version": "0.1.0",
+  "description": "Toolkit for creating synthetic DICOM test data and public corpora.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@11.3.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "dist/esm/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/esm/index.js",
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/esm/index.js"
+    },
+    "./public-cases.json": "./data/public-cases.json"
+  },
+  "files": [
+    "dist",
+    "data/public-cases.json"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build:esm": "node esbuild.config.js",
+    "build:types": "tsc --emitDeclarationOnly --outDir dist/types -p tsconfig.build.json",
+    "build": "pnpm build:esm && pnpm build:types && pnpm build:data",
+    "build:data": "mkdir -p dist/data && cp data/public-cases.json dist/data/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src test scripts --ext .ts",
+    "lint:fix": "eslint src test scripts --ext .ts --fix",
+    "check": "biome check .",
+    "check:errors": "biome check . --diagnostic-level=error",
+    "check:fix": "biome check . --write",
+    "write:synthetic": "tsx scripts/write-synthetic-fixtures.ts",
+    "fetch:public-case": "tsx scripts/fetch-public-case.ts"
+  },
+  "lint-staged": {
+    "*.{js,jsx,ts,tsx,mjs,mts,json,css,md}": [
+      "biome check --write --no-errors-on-unmatched"
+    ],
+    "*.{ts,tsx}": [
+      "eslint --fix"
+    ]
+  },
+  "peerDependencies": {
+    "dcmjs": "^0.51.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.7",
+    "@types/node": "^22.15.3",
+    "@eslint/js": "^9.34.0",
+    "@typescript-eslint/eslint-plugin": "^8.46.1",
+    "@typescript-eslint/parser": "^8.46.1",
+    "dcmjs": "^0.51.1",
+    "esbuild": "^0.25.9",
+    "eslint": "^9.38.0",
+    "globals": "^16.4.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
