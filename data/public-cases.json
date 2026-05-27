@@ -1,0 +1,25 @@
+{
+  "cases": [
+    {
+      "id": "pydicom-badVR",
+      "violation_class": "invalid-vr",
+      "dciodvfy_skip": true,
+      "notes": "MIT-licensed pydicom test file. dciodvfy aborts (assertion) on this encoding; use for fetch/cache only.",
+      "source": {
+        "kind": "url",
+        "url": "https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/badVR.dcm"
+      },
+      "sha256": "d12583df0cf66146256238b4cada266956a317c0546c7516cb36f56982ce85b2"
+    },
+    {
+      "id": "pydicom-CT-small",
+      "violation_class": "real-world-warnings",
+      "notes": "MIT-licensed pydicom CT_small.dcm; dciodvfy reports warnings on a mostly-valid file.",
+      "source": {
+        "kind": "url",
+        "url": "https://raw.githubusercontent.com/pydicom/pydicom/main/src/pydicom/data/test_files/CT_small.dcm"
+      },
+      "sha256": "3dd31e5cc835b3f2cdd46c9da1982f59251e78518fefa8163d914631c66437d6"
+    }
+  ]
+}
