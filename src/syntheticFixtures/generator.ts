@@ -4,7 +4,8 @@
  */
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import * as dcmjs from 'dcmjs'
+import type * as Dcmjs from 'dcmjs'
+import { dcmjs } from '../loadDcmjs.js'
 
 const CT_SOP_CLASS = '1.2.840.10008.5.1.4.1.1.2'
 
@@ -72,7 +73,7 @@ function naturalDataset(variant: SyntheticCtVariant): Record<string, unknown> {
 
 export function buildDicomDict(
   variant: SyntheticCtVariant,
-): dcmjs.data.DicomDict {
+): Dcmjs.data.DicomDict {
   const meta = {
     FileMetaInformationVersion: new Uint8Array([0, 1]).buffer,
     MediaStorageSOPClassUID: CT_SOP_CLASS,
