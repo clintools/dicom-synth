@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/clintools/dicom-synth/compare/v1.0.0...v1.0.1) (2026-06-03)
+
+
+### Bug Fixes
+
+* grant pull-requests and issues write permissions release workflow whilst repo is private ([39f9230](https://github.com/clintools/dicom-synth/commit/39f9230f4af2393a97e279fcd8e7321e393feef7))
+
 # 1.0.0 (2026-06-03)
 
 
