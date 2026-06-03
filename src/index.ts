@@ -1,4 +1,12 @@
 export {
+  writeFakeDicomSignatureFile,
+  writeNonDicomFile,
+} from './negativeCases/index'
+export {
+  buildDicomdirBuffer,
+  writeDicomdirFile,
+} from './nonStandardDicom/dicomdir'
+export {
   defaultPublicCasesPath,
   loadCaseById,
   loadCasesFromJson,
@@ -14,7 +22,9 @@ export {
 export {
   buildDicomDict,
   buildSyntheticCtBuffer,
+  type MinimalDicomTags,
   SYNTHETIC_FIXTURES,
   type SyntheticCtVariant,
+  writeMinimalDicomFile,
   writeSyntheticFixturesToDir,
 } from './syntheticFixtures/generator'

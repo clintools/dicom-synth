@@ -119,6 +119,53 @@ export const SYNTHETIC_FIXTURES: {
   },
 ]
 
+export type MinimalDicomTags = {
+  patientId?: string
+  patientName?: string
+  sopInstanceUid?: string
+}
+
+/**
+ * Write a minimal CT DICOM file to `filePath`.
+ *
+ * The output is intentionally bare: it contains no Part 10 group-0002
+ * file-meta header (no MediaStorageSOPClassUID, TransferSyntaxUID, etc.).
+ * Use `buildDicomDict` / `buildSyntheticCtBuffer` when a conformant
+ * Part 10 file with a complete meta header is required.
+ *
+ * The parent directory is created if it does not exist.
+ */
+export function writeMinimalDicomFile(
+  filePath: string,
+  tags?: MinimalDicomTags,
+): void {
+  const patientId = tags?.patientId ?? 'TEST-PATIENT-001'
+  const patientName = tags?.patientName ?? 'TEST^PATIENT'
+  const sopUID = tags?.sopInstanceUid ?? '1.2.3.4.5.6.7.8.9.0.1'
+
+  const dataset: Record<string, unknown> = {
+    PatientName: patientName,
+    PatientID: patientId,
+    Modality: 'CT',
+    SOPClassUID: CT_SOP_CLASS,
+    SOPInstanceUID: sopUID,
+    SeriesInstanceUID: '1.2.3.4.5.6.7.8',
+    StudyInstanceUID: '1.2.3.4.5.6.7',
+    SeriesNumber: '1',
+    Rows: 1,
+    Columns: 1,
+    BitsAllocated: 16,
+    PixelRepresentation: 0,
+    PixelData: new Uint8Array([0, 0]).buffer,
+  }
+
+  const dicomDict = new dcmjs.data.DicomDict({})
+  dicomDict.dict = dcmjs.data.DicomMetaDictionary.denaturalizeDataset(dataset)
+  const buffer = Buffer.from(dicomDict.write({ allowInvalidVRLength: true }))
+  mkdirSync(resolve(filePath, '..'), { recursive: true })
+  writeFileSync(filePath, buffer)
+}
+
 /** Write all catalogue fixtures to a directory (created if missing). */
 export function writeSyntheticFixturesToDir(outDir: string): string[] {
   const root = resolve(outDir)
