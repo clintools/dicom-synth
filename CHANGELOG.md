@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/clintools/dicom-synth/compare/v1.0.1...v1.1.0) (2026-06-11)
+
+
+### Features
+
+* replace fixed fixture catalogue with schema-driven dataset generation ([d5c5911](https://github.com/clintools/dicom-synth/commit/d5c591187e3770f8c921c97d90f20157854976e9))
+
 ## [1.0.1](https://github.com/clintools/dicom-synth/compare/v1.0.0...v1.0.1) (2026-06-03)
 
 
