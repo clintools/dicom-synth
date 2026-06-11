@@ -1,0 +1,8 @@
+{
+  "entries": [
+    { "type": "valid-ct", "count": 1 },
+    { "type": "invalid-uid-ct", "count": 1 },
+    { "type": "vendor-warnings-ct", "count": 1 }
+  ],
+  "seed": 42
+}

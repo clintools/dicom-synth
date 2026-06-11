@@ -4,7 +4,7 @@
   "description": "Toolkit for synthetic DICOM fixtures and public fixture fetch/cache.",
   "license": "Apache-2.0",
   "type": "module",
-  "packageManager": "pnpm@11.3.0",
+  "packageManager": "pnpm@11.5.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/clintools/dicom-synth.git"
@@ -22,7 +22,7 @@
   "module": "dist/esm/index.js",
   "types": "dist/types/index.d.ts",
   "bin": {
-    "dicom-synth-write": "./bin/dicom-synth-write.mjs",
+    "dicom-synth-generate": "./bin/dicom-synth-generate.mjs",
     "dicom-synth-fetch": "./bin/dicom-synth-fetch.mjs"
   },
   "exports": {
