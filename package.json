@@ -22,7 +22,7 @@
   "module": "dist/esm/index.js",
   "types": "dist/types/index.d.ts",
   "bin": {
-    "dicom-synth-write": "./bin/dicom-synth-write.mjs",
+    "dicom-synth-generate": "./bin/dicom-synth-generate.mjs",
     "dicom-synth-fetch": "./bin/dicom-synth-fetch.mjs"
   },
   "exports": {

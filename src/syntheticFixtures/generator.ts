@@ -1,55 +1,86 @@
-/**
- * Deterministic synthetic DICOM fixtures.
- * No PHI - patient names and IDs are fixed literals only.
- */
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import type * as Dcmjs from 'dcmjs'
 import { dcmjs } from '../loadDcmjs.js'
+import { buildDicomdirBuffer } from '../nonStandardDicom/dicomdir.js'
+import type {
+  DicomTagOverrides,
+  FileSpec,
+  TransferSyntax,
+} from '../schema/types.js'
+import { HEX_TAG_RE } from '../schema/validate.js'
+import type { UidSet } from './uid.js'
 
 const CT_SOP_CLASS = '1.2.840.10008.5.1.4.1.1.2'
 
-export type SyntheticCtVariant =
-  | 'minimal-invalid-uid'
-  | 'valid-uid'
-  | 'vendor-warnings'
-
-const VARIANT_INDEX: Record<SyntheticCtVariant, number> = {
-  'minimal-invalid-uid': 0,
-  'valid-uid': 1,
-  'vendor-warnings': 2,
+const TRANSFER_SYNTAX_UID: Record<TransferSyntax, string> = {
+  'explicit-vr-little-endian': '1.2.840.10008.1.2.1',
+  'implicit-vr-little-endian': '1.2.840.10008.1.2',
 }
 
-function uidFor(
-  variant: SyntheticCtVariant,
-  role: 'study' | 'series' | 'sop',
-): string {
-  const i = VARIANT_INDEX[variant]
-  if (variant === 'minimal-invalid-uid') {
-    return `2.25.100000000000000000000000000000.${role}.${i}`
+// Build a reverse map from 8-hex-char tag (e.g. "00080060") to DICOM keyword.
+// Used to resolve the tags escape hatch at generation time.
+function buildTagToKeyword(): Map<string, string> {
+  const map = new Map<string, string>()
+  const nm = (
+    dcmjs as unknown as {
+      data?: {
+        DicomMetaDictionary?: { nameMap?: Record<string, { tag?: string }> }
+      }
+    }
+  ).data?.DicomMetaDictionary?.nameMap
+  if (!nm) return map
+  for (const [keyword, info] of Object.entries(nm)) {
+    if (info?.tag) {
+      const hex = info.tag.replace(/[(,)]/g, '').toUpperCase()
+      if (hex.length === 8) map.set(hex, keyword)
+    }
   }
-  const uidRoots = [
-    '1000000000000000000000000000000000001',
-    '1000000000000000000000000000000000002',
-    '1000000000000000000000000000000000003',
-  ] as const
-  const roleSuffix = role === 'study' ? 1 : role === 'series' ? 2 : 3
-  return `2.25.${uidRoots[i]}.${roleSuffix}`
+  return map
 }
 
-function naturalDataset(variant: SyntheticCtVariant): Record<string, unknown> {
-  const studyUID = uidFor(variant, 'study')
-  const seriesUID = uidFor(variant, 'series')
-  const sopUID = uidFor(variant, 'sop')
+const tagToKeyword = buildTagToKeyword()
 
-  const dataset: Record<string, unknown> = {
+function applyTagOverrides(
+  dataset: Record<string, unknown>,
+  tags: DicomTagOverrides | undefined,
+): void {
+  if (!tags) return
+  for (const [key, value] of Object.entries(tags)) {
+    if (HEX_TAG_RE.test(key)) {
+      const keyword = tagToKeyword.get(key.toUpperCase())
+      if (keyword) {
+        dataset[keyword] = value
+      } else {
+        console.warn(`dicom-synth: unknown hex tag "${key}" — skipping`)
+      }
+    } else {
+      dataset[key] = value
+    }
+  }
+}
+
+function buildMeta(
+  uid: UidSet,
+  transferSyntax: TransferSyntax = 'explicit-vr-little-endian',
+): Record<string, unknown> {
+  return {
+    FileMetaInformationVersion: new Uint8Array([0, 1]).buffer,
+    MediaStorageSOPClassUID: CT_SOP_CLASS,
+    MediaStorageSOPInstanceUID: uid.sop,
+    TransferSyntaxUID: TRANSFER_SYNTAX_UID[transferSyntax],
+    ImplementationClassUID: '1.2.3.4',
+    ImplementationVersionName: 'SYNTH',
+  }
+}
+
+function buildBaseCtDataset(uid: UidSet): Record<string, unknown> {
+  return {
     PatientName: 'SYNTH^SUBJECT',
     PatientID: 'SYNTH_PID',
     Modality: 'CT',
     SOPClassUID: CT_SOP_CLASS,
-    SOPInstanceUID: sopUID,
-    SeriesInstanceUID: seriesUID,
-    StudyInstanceUID: studyUID,
+    SOPInstanceUID: uid.sop,
+    SeriesInstanceUID: uid.series,
+    StudyInstanceUID: uid.study,
     StudyDescription: 'Synthetic study',
     SeriesDescription: 'Synthetic series',
     Rows: 1,
@@ -61,120 +92,116 @@ function naturalDataset(variant: SyntheticCtVariant): Record<string, unknown> {
     PhotometricInterpretation: 'MONOCHROME2',
     PixelRepresentation: 0,
     PixelData: new Uint8Array([0, 0]).buffer,
+    // Declares PixelData's VR explicitly — without it dcmjs logs
+    // "No value representation given for PixelData" and falls back to OW anyway.
+    _vrMap: { PixelData: 'OW' },
   }
-
-  if (variant === 'vendor-warnings') {
-    dataset.Laterality = ''
-    dataset.PatientWeight = '0'
-  }
-
-  return dataset
 }
 
-export function buildDicomDict(
-  variant: SyntheticCtVariant,
-): Dcmjs.data.DicomDict {
-  const meta = {
-    FileMetaInformationVersion: new Uint8Array([0, 1]).buffer,
-    MediaStorageSOPClassUID: CT_SOP_CLASS,
-    MediaStorageSOPInstanceUID: uidFor(variant, 'sop'),
-    TransferSyntaxUID: '1.2.840.10008.1.2.1',
-    ImplementationClassUID: '1.2.3.4',
-    ImplementationVersionName: 'SYNTH',
-  }
+function serializeDict(
+  meta: Record<string, unknown>,
+  dataset: Record<string, unknown>,
+): Buffer {
   const dicomDict = new dcmjs.data.DicomDict(
-    dcmjs.data.DicomMetaDictionary.denaturalizeDataset(meta),
+    dcmjs.data.DicomMetaDictionary.denaturalizeDataset(
+      meta,
+    ) as Dcmjs.data.DicomDataset,
   )
   dicomDict.dict = dcmjs.data.DicomMetaDictionary.denaturalizeDataset(
-    naturalDataset(variant),
-  )
-  return dicomDict
+    dataset,
+  ) as Dcmjs.data.DicomDataset
+  return Buffer.from(dicomDict.write({ allowInvalidVRLength: true }))
 }
 
-export function buildSyntheticCtBuffer(variant: SyntheticCtVariant): Buffer {
-  return Buffer.from(
-    buildDicomDict(variant).write({ allowInvalidVRLength: true }),
-  )
+function buildValidCtBuffer(
+  uid: UidSet,
+  tags?: DicomTagOverrides,
+  transferSyntax?: TransferSyntax,
+): Buffer {
+  const dataset = buildBaseCtDataset(uid)
+  applyTagOverrides(dataset, tags)
+  return serializeDict(buildMeta(uid, transferSyntax), dataset)
 }
 
-export const SYNTHETIC_FIXTURES: {
-  filename: string
-  variant: SyntheticCtVariant
-  description: string
-}[] = [
-  {
-    filename: 'minimal-ct-0.dcm',
-    variant: 'minimal-invalid-uid',
-    description: 'Minimal CT with text in UIDs (many dciodvfy errors)',
-  },
-  {
-    filename: 'valid-uid-ct-0.dcm',
-    variant: 'valid-uid',
-    description: 'Minimal CT with numeric UIDs only (missing-module noise)',
-  },
-  {
-    filename: 'vendor-warnings-ct-0.dcm',
-    variant: 'vendor-warnings',
-    description: 'Valid UIDs plus empty Laterality and zero PatientWeight',
-  },
-]
-
-export type MinimalDicomTags = {
-  patientId?: string
-  patientName?: string
-  sopInstanceUid?: string
-}
-
-/**
- * Write a minimal CT DICOM file to `filePath`.
- *
- * The output is intentionally bare: it contains no Part 10 group-0002
- * file-meta header (no MediaStorageSOPClassUID, TransferSyntaxUID, etc.).
- * Use `buildDicomDict` / `buildSyntheticCtBuffer` when a conformant
- * Part 10 file with a complete meta header is required.
- *
- * The parent directory is created if it does not exist.
- */
-export function writeMinimalDicomFile(
-  filePath: string,
-  tags?: MinimalDicomTags,
-): void {
-  const patientId = tags?.patientId ?? 'TEST-PATIENT-001'
-  const patientName = tags?.patientName ?? 'TEST^PATIENT'
-  const sopUID = tags?.sopInstanceUid ?? '1.2.3.4.5.6.7.8.9.0.1'
-
-  const dataset: Record<string, unknown> = {
-    PatientName: patientName,
-    PatientID: patientId,
-    Modality: 'CT',
-    SOPClassUID: CT_SOP_CLASS,
-    SOPInstanceUID: sopUID,
-    SeriesInstanceUID: '1.2.3.4.5.6.7.8',
-    StudyInstanceUID: '1.2.3.4.5.6.7',
-    SeriesNumber: '1',
-    Rows: 1,
-    Columns: 1,
-    BitsAllocated: 16,
-    PixelRepresentation: 0,
-    PixelData: new Uint8Array([0, 0]).buffer,
+function buildInvalidUidCtBuffer(
+  uid: UidSet,
+  tags?: DicomTagOverrides,
+  transferSyntax?: TransferSyntax,
+): Buffer {
+  // UIDs contain the string "study"/"series"/"sop" — non-numeric, non-conformant.
+  const invalidUid = {
+    study: `2.25.invalid.study.${uid.study.slice(-6)}`,
+    series: `2.25.invalid.series.${uid.series.slice(-6)}`,
+    sop: `2.25.invalid.sop.${uid.sop.slice(-6)}`,
   }
-
-  const dicomDict = new dcmjs.data.DicomDict({})
-  dicomDict.dict = dcmjs.data.DicomMetaDictionary.denaturalizeDataset(dataset)
-  const buffer = Buffer.from(dicomDict.write({ allowInvalidVRLength: true }))
-  mkdirSync(resolve(filePath, '..'), { recursive: true })
-  writeFileSync(filePath, buffer)
+  const dataset = buildBaseCtDataset(invalidUid)
+  applyTagOverrides(dataset, tags)
+  return serializeDict(buildMeta(invalidUid, transferSyntax), dataset)
 }
 
-/** Write all catalogue fixtures to a directory (created if missing). */
-export function writeSyntheticFixturesToDir(outDir: string): string[] {
-  const root = resolve(outDir)
-  mkdirSync(root, { recursive: true })
-  const written: string[] = []
-  for (const { filename, variant } of SYNTHETIC_FIXTURES) {
-    const path = resolve(root, filename)
-    writeFileSync(path, buildSyntheticCtBuffer(variant))
-    written.push(path)
+function buildVendorCtBuffer(
+  uid: UidSet,
+  tags?: DicomTagOverrides,
+  transferSyntax?: TransferSyntax,
+): Buffer {
+  // Vendor defaults set first so that user tag overrides can win.
+  const dataset = buildBaseCtDataset(uid)
+  dataset.Laterality = ''
+  dataset.PatientWeight = '0'
+  applyTagOverrides(dataset, tags)
+  return serializeDict(buildMeta(uid, transferSyntax), dataset)
+}
+
+function buildLargeCtBuffer(
+  uid: UidSet,
+  rows: number,
+  columns: number,
+  frames: number,
+  tags?: DicomTagOverrides,
+  transferSyntax?: TransferSyntax,
+): Buffer {
+  const dataset = buildBaseCtDataset(uid)
+  dataset.Rows = rows
+  dataset.Columns = columns
+  dataset.NumberOfFrames = frames
+  // 16-bit signed, 2 bytes per pixel
+  dataset.PixelData = new Uint8Array(rows * columns * frames * 2).buffer
+  applyTagOverrides(dataset, tags)
+  return serializeDict(buildMeta(uid, transferSyntax), dataset)
+}
+
+function buildFakeSignatureBuffer(): Buffer {
+  const buf = Buffer.alloc(200, 0)
+  buf.write('XXXX', 128, 4, 'ascii')
+  return buf
+}
+
+function buildNonDicomBuffer(content = 'not dicom'): Buffer {
+  return Buffer.from(content, 'utf8')
+}
+
+export function buildBufferForSpec(spec: FileSpec, uid: UidSet): Buffer {
+  switch (spec.type) {
+    case 'valid-ct':
+      return buildValidCtBuffer(uid, spec.tags, spec.transferSyntax)
+    case 'invalid-uid-ct':
+      return buildInvalidUidCtBuffer(uid, spec.tags, spec.transferSyntax)
+    case 'vendor-warnings-ct':
+      return buildVendorCtBuffer(uid, spec.tags, spec.transferSyntax)
+    case 'large-ct':
+      return buildLargeCtBuffer(
+        uid,
+        spec.rows,
+        spec.columns,
+        spec.frames ?? 1,
+        spec.tags,
+        spec.transferSyntax,
+      )
+    case 'fake-signature':
+      return buildFakeSignatureBuffer()
+    case 'non-dicom':
+      return buildNonDicomBuffer(spec.content)
+    case 'dicomdir':
+      return buildDicomdirBuffer()
   }
-  return written
 }
