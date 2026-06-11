@@ -1,7 +1,10 @@
 import type {
+  DatasetLayout,
   DatasetSpec,
   EntrySpec,
   FileSpec,
+  SeriesSpec,
+  StudySpec,
   TransferSyntax,
   ViolationClass,
 } from './types.js'
@@ -18,6 +21,11 @@ const TYPE_CAPABILITIES = {
   FileSpec['type'],
   { tags: boolean; violations: boolean; transferSyntax: boolean }
 >
+
+const VALID_LAYOUTS = {
+  flat: true,
+  hierarchical: true,
+} as const satisfies Record<DatasetLayout, true>
 
 const VALID_TRANSFER_SYNTAXES = {
   'explicit-vr-little-endian': true,
@@ -41,6 +49,14 @@ const VALID_VIOLATIONS = {
 // Accept DICOM keyword names (PascalCase alphanumeric) or 8-hex-char tag strings.
 export const HEX_TAG_RE = /^[0-9a-fA-F]{8}$/
 const KEYWORD_RE = /^[A-Z][A-Za-z0-9]*$/
+
+function validatePositiveInt(value: unknown, path: string): void {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new Error(
+      `${path}: must be a positive integer; got ${JSON.stringify(value)}`,
+    )
+  }
+}
 
 function validateTagKey(key: string, path: string): void {
   if (!HEX_TAG_RE.test(key) && !KEYWORD_RE.test(key)) {
@@ -66,17 +82,7 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
   const type = e.type as FileSpec['type']
   const caps = TYPE_CAPABILITIES[type]
 
-  if ('count' in e) {
-    if (
-      typeof e.count !== 'number' ||
-      !Number.isInteger(e.count) ||
-      e.count < 1
-    ) {
-      throw new Error(
-        `${path}.count: must be a positive integer; got ${JSON.stringify(e.count)}`,
-      )
-    }
-  }
+  if ('count' in e) validatePositiveInt(e.count, `${path}.count`)
 
   if ('transferSyntax' in e) {
     if (!caps.transferSyntax) {
@@ -96,18 +102,7 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
   if (!caps.violations && 'violations' in e)
     throw new Error(`${path}.violations: not supported for type "${type}"`)
 
-  if ('tags' in e) {
-    if (
-      typeof e.tags !== 'object' ||
-      e.tags === null ||
-      Array.isArray(e.tags)
-    ) {
-      throw new Error(`${path}.tags: must be an object`)
-    }
-    for (const key of Object.keys(e.tags as object)) {
-      validateTagKey(key, `${path}.tags`)
-    }
-  }
+  if ('tags' in e) validateTags(e.tags, `${path}.tags`)
 
   if ('violations' in e) {
     if (!Array.isArray(e.violations)) {
@@ -123,25 +118,9 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
   }
 
   if (type === 'large-ct') {
-    if (typeof e.rows !== 'number' || !Number.isInteger(e.rows) || e.rows < 1) {
-      throw new Error(`${path}.rows: must be a positive integer`)
-    }
-    if (
-      typeof e.columns !== 'number' ||
-      !Number.isInteger(e.columns) ||
-      e.columns < 1
-    ) {
-      throw new Error(`${path}.columns: must be a positive integer`)
-    }
-    if ('frames' in e) {
-      if (
-        typeof e.frames !== 'number' ||
-        !Number.isInteger(e.frames) ||
-        e.frames < 1
-      ) {
-        throw new Error(`${path}.frames: must be a positive integer`)
-      }
-    }
+    validatePositiveInt(e.rows, `${path}.rows`)
+    validatePositiveInt(e.columns, `${path}.columns`)
+    if ('frames' in e) validatePositiveInt(e.frames, `${path}.frames`)
     const rows = e.rows as number
     const columns = e.columns as number
     const frames = typeof e.frames === 'number' ? e.frames : 1
@@ -155,6 +134,63 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
   return e as unknown as EntrySpec
 }
 
+function validateTags(tags: unknown, path: string): void {
+  if (typeof tags !== 'object' || tags === null || Array.isArray(tags)) {
+    throw new Error(`${path}: must be an object`)
+  }
+  for (const key of Object.keys(tags as object)) {
+    validateTagKey(key, path)
+  }
+}
+
+function validateSeries(series: unknown, path: string): SeriesSpec {
+  if (typeof series !== 'object' || series === null || Array.isArray(series)) {
+    throw new Error(`${path}: must be an object`)
+  }
+
+  const s = series as Record<string, unknown>
+
+  if (!Array.isArray(s.entries) || s.entries.length === 0) {
+    throw new Error(`${path}.entries: must be a non-empty array`)
+  }
+
+  for (let i = 0; i < s.entries.length; i++) {
+    const e = validateEntry(s.entries[i], `${path}.entries[${i}]`)
+    // Only image-generating types can be grouped (mirrors SeriesEntrySpec).
+    if (!TYPE_CAPABILITIES[e.type].tags) {
+      throw new Error(
+        `${path}.entries[${i}].type: "${e.type}" cannot be used inside a series — only types that support tags can be grouped`,
+      )
+    }
+  }
+
+  if ('tags' in s) validateTags(s.tags, `${path}.tags`)
+
+  return s as unknown as SeriesSpec
+}
+
+function validateStudy(study: unknown, path: string): StudySpec {
+  if (typeof study !== 'object' || study === null || Array.isArray(study)) {
+    throw new Error(`${path}: must be an object`)
+  }
+
+  const st = study as Record<string, unknown>
+
+  if (!Array.isArray(st.series) || st.series.length === 0) {
+    throw new Error(`${path}.series: must be a non-empty array`)
+  }
+
+  for (let i = 0; i < st.series.length; i++) {
+    validateSeries(st.series[i], `${path}.series[${i}]`)
+  }
+
+  if ('count' in st) validatePositiveInt(st.count, `${path}.count`)
+
+  if ('tags' in st) validateTags(st.tags, `${path}.tags`)
+
+  return st as unknown as StudySpec
+}
+
 export function validateDatasetSpec(raw: unknown): DatasetSpec {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     throw new Error('DatasetSpec: must be a JSON object')
@@ -162,15 +198,26 @@ export function validateDatasetSpec(raw: unknown): DatasetSpec {
 
   const r = raw as Record<string, unknown>
 
-  if (!Array.isArray(r.entries)) {
+  if ('entries' in r && !Array.isArray(r.entries)) {
     throw new Error('DatasetSpec.entries: must be an array')
   }
-  if (r.entries.length === 0) {
-    throw new Error('DatasetSpec.entries: must not be empty')
+  if ('studies' in r && !Array.isArray(r.studies)) {
+    throw new Error('DatasetSpec.studies: must be an array')
   }
 
-  const entries = r.entries.map((entry, i) =>
+  const rawEntries = (r.entries as unknown[]) ?? []
+  const rawStudies = (r.studies as unknown[]) ?? []
+  if (rawEntries.length === 0 && rawStudies.length === 0) {
+    throw new Error(
+      'DatasetSpec: must contain at least one of "entries" or "studies" (non-empty)',
+    )
+  }
+
+  const entries = rawEntries.map((entry, i) =>
     validateEntry(entry, `entries[${i}]`),
+  )
+  const studies = rawStudies.map((study, i) =>
+    validateStudy(study, `studies[${i}]`),
   )
 
   if ('seed' in r) {
@@ -181,8 +228,21 @@ export function validateDatasetSpec(raw: unknown): DatasetSpec {
     }
   }
 
+  if ('layout' in r) {
+    if (
+      typeof r.layout !== 'string' ||
+      !Object.hasOwn(VALID_LAYOUTS, r.layout)
+    ) {
+      throw new Error(
+        `DatasetSpec.layout: must be one of ${Object.keys(VALID_LAYOUTS).join(', ')}; got ${JSON.stringify(r.layout)}`,
+      )
+    }
+  }
+
   return {
-    entries,
+    ...(entries.length > 0 ? { entries } : {}),
+    ...(studies.length > 0 ? { studies } : {}),
     ...(r.seed !== undefined ? { seed: r.seed as number } : {}),
+    ...(r.layout !== undefined ? { layout: r.layout as DatasetLayout } : {}),
   }
 }
