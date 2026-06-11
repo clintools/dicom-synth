@@ -281,3 +281,103 @@ describe('validateDatasetSpec — invalid inputs', () => {
     ).toThrow(/512 MB/)
   })
 })
+
+describe('validateDatasetSpec — studies', () => {
+  const minimalStudy = { series: [{ entries: [{ type: 'valid-ct' }] }] }
+
+  it('accepts a studies-only spec', () => {
+    const spec = validateDatasetSpec({ studies: [minimalStudy] })
+    expect(spec.studies).toHaveLength(1)
+    expect(spec.entries).toBeUndefined()
+  })
+
+  it('accepts entries and studies together', () => {
+    const spec = validateDatasetSpec({
+      entries: [{ type: 'valid-ct' }],
+      studies: [minimalStudy],
+    })
+    expect(spec.entries).toHaveLength(1)
+    expect(spec.studies).toHaveLength(1)
+  })
+
+  it('accepts study count and tags', () => {
+    const spec = validateDatasetSpec({
+      studies: [{ ...minimalStudy, count: 3, tags: { PatientID: 'P1' } }],
+    })
+    expect(spec.studies?.[0].count).toBe(3)
+  })
+
+  it('accepts layout values flat and hierarchical', () => {
+    for (const layout of ['flat', 'hierarchical']) {
+      expect(() =>
+        validateDatasetSpec({ studies: [minimalStudy], layout }),
+      ).not.toThrow()
+    }
+  })
+
+  it('rejects a spec with neither entries nor studies', () => {
+    expect(() => validateDatasetSpec({})).toThrow(
+      /entries.*studies|studies.*entries/,
+    )
+    expect(() => validateDatasetSpec({ entries: [], studies: [] })).toThrow()
+  })
+
+  it('rejects non-array studies', () => {
+    expect(() => validateDatasetSpec({ studies: {} })).toThrow(
+      /must be an array/,
+    )
+  })
+
+  it('rejects a study with empty series', () => {
+    expect(() => validateDatasetSpec({ studies: [{ series: [] }] })).toThrow(
+      /series: must be a non-empty array/,
+    )
+  })
+
+  it('rejects a series with empty entries', () => {
+    expect(() =>
+      validateDatasetSpec({ studies: [{ series: [{ entries: [] }] }] }),
+    ).toThrow(/entries: must be a non-empty array/)
+  })
+
+  it('rejects non-tag-capable types inside a series', () => {
+    for (const type of ['fake-signature', 'non-dicom', 'dicomdir']) {
+      expect(() =>
+        validateDatasetSpec({
+          studies: [{ series: [{ entries: [{ type }] }] }],
+        }),
+      ).toThrow(/cannot be used inside a series/)
+    }
+  })
+
+  it('rejects invalid study count', () => {
+    expect(() =>
+      validateDatasetSpec({ studies: [{ ...minimalStudy, count: 0 }] }),
+    ).toThrow(/count: must be a positive integer/)
+  })
+
+  it('rejects invalid tag keys on study and series tags', () => {
+    expect(() =>
+      validateDatasetSpec({
+        studies: [{ ...minimalStudy, tags: { 'bad key': 'x' } }],
+      }),
+    ).toThrow(/invalid tag key/)
+    expect(() =>
+      validateDatasetSpec({
+        studies: [
+          {
+            series: [
+              { entries: [{ type: 'valid-ct' }], tags: { 'bad key': 'x' } },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(/invalid tag key/)
+  })
+
+  it('rejects an unknown layout', () => {
+    expect(() =>
+      validateDatasetSpec({ studies: [minimalStudy], layout: 'nested' }),
+    ).toThrow(/layout: must be one of flat, hierarchical/)
+  })
+})

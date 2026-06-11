@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { UidSet } from '../src/syntheticFixtures/uid'
-import { makeUidGenerator } from '../src/syntheticFixtures/uid'
+import {
+  makeGroupUidGenerator,
+  makeUidGenerator,
+} from '../src/syntheticFixtures/uid'
 
 function assertWellFormed({ study, series, sop }: UidSet): void {
   for (const uid of [study, series, sop]) {
@@ -85,5 +88,47 @@ describe('makeUidGenerator — seeded', () => {
     expect(study).not.toBe(series)
     expect(study).not.toBe(sop)
     expect(series).not.toBe(sop)
+  })
+})
+
+describe('makeGroupUidGenerator — seeded', () => {
+  it('same seed produces identical study/series UIDs', () => {
+    const a = makeGroupUidGenerator(42)
+    const b = makeGroupUidGenerator(42)
+    expect(a.study(0)).toBe(b.study(0))
+    expect(a.series(0, 1)).toBe(b.series(0, 1))
+  })
+
+  it('different study indices produce different study UIDs', () => {
+    const gen = makeGroupUidGenerator(42)
+    expect(gen.study(0)).not.toBe(gen.study(1))
+  })
+
+  it('different series indices produce different series UIDs', () => {
+    const gen = makeGroupUidGenerator(42)
+    expect(gen.series(0, 0)).not.toBe(gen.series(0, 1))
+    expect(gen.series(0, 0)).not.toBe(gen.series(1, 0))
+  })
+
+  it('group study UID differs from per-file study UID at the same index', () => {
+    const group = makeGroupUidGenerator(42)
+    const perFile = makeUidGenerator(42)
+    expect(group.study(0)).not.toBe(perFile(0).study)
+    expect(group.study(1)).not.toBe(perFile(1).study)
+  })
+
+  it('UIDs are well-formed (prefix, length, role suffix)', () => {
+    const gen = makeGroupUidGenerator(7)
+    expect(gen.study(3)).toMatch(/^2\.25\.\d+\.\d+\.1$/)
+    expect(gen.series(3, 2)).toMatch(/^2\.25\.\d+\.\d+\.2$/)
+    expect(gen.study(3).length).toBeLessThanOrEqual(64)
+  })
+})
+
+describe('makeGroupUidGenerator — unseeded', () => {
+  it('successive calls produce different UIDs (random)', () => {
+    const gen = makeGroupUidGenerator()
+    expect(gen.study(0)).not.toBe(gen.study(0))
+    expect(gen.series(0, 0)).not.toBe(gen.series(0, 0))
   })
 })
