@@ -1,10 +1,10 @@
 # dicom-synth
 
-Toolkit for **synthetic DICOM fixtures** and **public fixture** fetch/cache. Portable and independent of any consumer (e.g. [dicom-curate](https://github.com/clintools/dicom-curate)).
+Schema-driven **synthetic DICOM fixture generation** and **public fixture** fetch/cache. Portable and independent of any consumer (e.g. [dicom-curate](https://github.com/clintools/dicom-curate)).
 
 ## Disclaimer
 
-Pre-1.0.0 — APIs may change without notice.
+Still in early release. APIs may change without notice.
 
 ## Install
 
@@ -13,94 +13,387 @@ pnpm add dicom-synth
 pnpm add dcmjs   # peer dependency (^0.51.1)
 ```
 
-## Synthetic fixtures (in memory)
+---
+
+## Synthetic fixtures
+
+Generation is a three-layer API. Each layer is a thin wrapper over the one below.
+
+### Layer 1 — single file, no I/O
 
 ```ts
-import { buildSyntheticCtBuffer, SYNTHETIC_FIXTURES } from 'dicom-synth'
+import { generateFile } from 'dicom-synth'
 
-const buf = buildSyntheticCtBuffer('valid-uid')
-// use buf in tests or write to disk
+const { buffer, filename, type, index } = await generateFile({ type: 'valid-ct' })
+// buffer: Buffer ready to write or pass to a parser
+// filename: 'valid-ct-000.dcm'
 ```
 
-Variants (see `SYNTHETIC_FIXTURES` in `src/syntheticFixtures/generator.ts`):
-
-| Variant | Purpose |
-|---------|---------|
-| `minimal-invalid-uid` | Invalid UID characters (many dciodvfy errors) |
-| `valid-uid` | Numeric UIDs only (missing-module noise) |
-| `vendor-warnings` | Numeric UIDs plus empty Laterality and zero PatientWeight |
-
-## Write synthetic fixtures to disk
-
-Published CLI:
-
-```bash
-pnpm dlx dicom-synth@latest dicom-synth-write ./tmp/fixtures
-```
-
-Local development:
-
-```bash
-pnpm write:synthetic -- ./out/fixtures
-```
-
-## Public fixtures
-
-Catalog metadata lives in `data/public-cases.json` (also importable as `dicom-synth/public-cases.json`). Fetched binaries are cached under `~/.cache/dicom-synth-testcases/<sha256>/file.dcm`.
+With options:
 
 ```ts
-import {
-  defaultPublicCasesPath,
-  fetchPublicCaseToCache,
-  loadCaseById,
-} from 'dicom-synth'
-
-const record = loadCaseById(defaultPublicCasesPath(), 'pydicom-CT-small')
-const path = await fetchPublicCaseToCache(record)
+const { buffer } = await generateFile(
+  { type: 'valid-ct', tags: { PatientID: 'P001' }, violations: ['uid-too-long'] },
+  { seed: 42, index: 7 },
+)
 ```
 
-Published CLI:
-
-```bash
-pnpm dlx dicom-synth@latest dicom-synth-fetch pydicom-CT-small
-```
-
-Local development:
-
-```bash
-pnpm fetch:public-case -- pydicom-CT-small
-```
-
-## Use in tests (ephemeral files)
+Write a single file to disk:
 
 ```ts
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { writeFileSync } from 'node:fs'
+import { generateFile } from 'dicom-synth'
+
+const { buffer, filename } = await generateFile({ type: 'valid-ct' })
+writeFileSync(`./out/${filename}`, buffer)
+```
+
+### Layer 2 — collection stream, no I/O
+
+```ts
+import { generateCollectionFromSpec } from 'dicom-synth'
+
+for await (const file of generateCollectionFromSpec({
+  entries: [
+    { type: 'valid-ct', count: 10 },
+    { type: 'invalid-uid-ct', count: 3 },
+  ],
+  seed: 42,
+})) {
+  console.log(file.filename, file.buffer.length)
+}
+```
+
+Files are yielded one at a time — safe to pipe without buffering the entire collection.
+
+### Layer 3 — disk writer
+
+```ts
+import { writeCollectionFromSpec } from 'dicom-synth'
+
+const manifest = await writeCollectionFromSpec(
+  { entries: [{ type: 'valid-ct', count: 5 }], seed: 42 },
+  './fixtures/generated',
+)
+// manifest: Array<{ path: string; type: string; index: number }>
+```
+
+---
+
+## Usage patterns
+
+### Ephemeral fixtures in tests (CI)
+
+Generate into a temp directory per test run — nothing committed, works in any CI environment:
+
+```ts
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildSyntheticCtBuffer } from 'dicom-synth'
+import { writeCollectionFromSpec } from 'dicom-synth'
 
 const dir = await mkdtemp(join(tmpdir(), 'synth-'))
 try {
-  await writeFile(join(dir, 'test.dcm'), buildSyntheticCtBuffer('valid-uid'))
+  await writeCollectionFromSpec(
+    { entries: [{ type: 'valid-ct', count: 3 }], seed: 42 },
+    dir,
+  )
   // run pipeline against dir
 } finally {
   await rm(dir, { recursive: true, force: true })
 }
 ```
 
-The same pattern works in CI when `dicom-synth` and `dcmjs` are installed; you do not need to commit `.dcm` binaries in the consumer repo.
+Use a fixed `seed` in CI so UID values are identical across runs and any diff is meaningful.
+
+### Static generation (commit schema, not binaries)
+
+Commit a `dataset.json` schema to your repo. Add a script to regenerate fixtures on demand:
+
+```json
+// package.json
+{
+  "scripts": {
+    "fixtures:generate": "dicom-synth-generate --schema dataset.json --out fixtures/dicom"
+  }
+}
+```
+
+```bash
+pnpm fixtures:generate     # regenerate
+```
+
+Commit `dataset.json` and `.gitignore` the output directory. Fixtures are regenerated locally or in a dedicated CI job — never stored as binaries in version control.
+
+### Calling the CLI from a consumer project
+
+After installing `dicom-synth`, the `dicom-synth-generate` binary is available via your package manager:
+
+```bash
+# pnpm
+pnpm exec dicom-synth-generate --schema dataset.json --out ./out
+
+# npm / npx
+npx dicom-synth-generate --schema dataset.json --out ./out
+
+# one-off without installing
+pnpm --package=dicom-synth dlx dicom-synth-generate --schema dataset.json --out ./out
+```
+
+### In-process pipeline (no disk I/O)
+
+Use layer 2 when passing generated files directly to a parser or pipeline without writing to disk:
+
+```ts
+import { generateCollectionFromSpec, type GeneratedFile } from 'dicom-synth'
+
+const files: GeneratedFile[] = []
+for await (const file of generateCollectionFromSpec({ entries: [{ type: 'valid-ct', count: 5 }] })) {
+  files.push(file)
+}
+```
+
+---
+
+## Schema reference
+
+### `DatasetSpec`
+
+```ts
+import type { DatasetSpec } from 'dicom-synth'
+
+type DatasetSpec = {
+  entries: EntrySpec[]   // one or more entry specs; must not be empty
+  seed?: number          // optional: fixed seed for deterministic UID generation
+}
+```
+
+`seed` makes UID generation fully deterministic across runs. Omit it for random UIDs.
+
+### `EntrySpec`
+
+An `EntrySpec` is a `FileSpec` plus an optional `count` field (how many times to generate it):
+
+```json
+{ "type": "valid-ct", "count": 10 }
+```
+
+`count` defaults to 1 and must be a positive integer. It is a collection-layer concern — `generateFile` does not accept `count`.
+
+### `FileSpec` type catalogue
+
+| Type | Description | Conformance |
+|---|---|---|
+| `valid-ct` | Standards-valid CT image; numeric UIDs, complete meta header | strict |
+| `invalid-uid-ct` | CT with non-numeric UIDs (letters in UID components) | edge |
+| `vendor-warnings-ct` | CT with empty `Laterality` and `PatientWeight = 0` — produces dciodvfy warnings | edge |
+| `large-ct` | CT with configurable pixel dimensions; `rows` and `columns` required | strict |
+| `fake-signature` | 200-byte buffer with `XXXX` at preamble offset — no DICM magic | edge |
+| `non-dicom` | Arbitrary text buffer; no extension in filename | edge |
+| `dicomdir` | Minimal DICOMDIR file | strict |
+
+**`large-ct` fields:**
+
+```json
+{ "type": "large-ct", "rows": 512, "columns": 512, "frames": 100 }
+```
+
+`frames` defaults to 1. A 512×512×100 CT produces a buffer of ~52 MB.
+
+**`non-dicom` fields:**
+
+```json
+{ "type": "non-dicom", "content": "not a dicom file" }
+```
+
+`content` defaults to `"not dicom"`.
+
+### Tag overrides (`tags`)
+
+Available on `valid-ct`, `invalid-uid-ct`, `vendor-warnings-ct`, and `large-ct`.
+
+```json
+{
+  "type": "valid-ct",
+  "tags": {
+    "PatientID": "P001",
+    "PatientName": "DOE^JANE",
+    "00081030": "Research Protocol A"
+  }
+}
+```
+
+Keys are either DICOM keyword names (PascalCase, e.g. `"Modality"`) or 8-hex-character tag strings (e.g. `"00080060"`). Unknown hex tags produce a console warning and are skipped.
+
+```ts
+import type { DicomTagOverrides } from 'dicom-synth'
+```
+
+### Transfer syntax (`transferSyntax`)
+
+Available on `valid-ct`, `invalid-uid-ct`, `vendor-warnings-ct`, and `large-ct`.
+
+| Value | `TransferSyntaxUID` in meta header |
+|---|---|
+| `explicit-vr-little-endian` (default) | `1.2.840.10008.1.2.1` |
+| `implicit-vr-little-endian` | `1.2.840.10008.1.2` |
+
+
+### Violation injection (`violations`)
+
+Available on `valid-ct`, `invalid-uid-ct`, `vendor-warnings-ct`, and `large-ct`. Violations are applied as post-processing transforms to an otherwise valid buffer.
+
+| Violation | Effect | Detectable by dciodvfy |
+|---|---|---|
+| `uid-too-long` | Sets `SOPInstanceUID` to a 65-character value (limit is 64) | yes |
+| `non-conformant-uid` | Sets `SOPInstanceUID` to a UID with a leading-zero component | yes |
+| `vr-max-length-exceeded` | Sets `StudyDescription` to a 65-character value (LO limit is 64) | yes |
+| `missing-type1-tag` | Removes `SOPClassUID` (Type 1 mandatory attribute) | yes |
+| `missing-meta-header` | Strips the 128-byte preamble and DICM prefix | yes |
+| `malformed-sq-delimiter` | Appends a sequence delimiter tag with a non-zero length field | yes |
+
+Tag-level violations are applied before byte-level violations. Byte-level violations may produce a buffer that cannot be re-parsed.
+
+```json
+{ "type": "valid-ct", "violations": ["uid-too-long", "missing-meta-header"] }
+```
+
+```ts
+import type { ViolationClass } from 'dicom-synth'
+```
+
+### Schema validation
+
+```ts
+import { validateDatasetSpec } from 'dicom-synth'
+
+const spec = validateDatasetSpec(JSON.parse(rawJson)) // throws on invalid input
+```
+
+The validator throws with a human-readable message on any structural error.
+
+### Full schema example
+
+```json
+{
+  "entries": [
+    { "type": "valid-ct",           "count": 10, "tags": { "PatientID": "P001" }, "transferSyntax": "explicit-vr-little-endian" },
+    { "type": "invalid-uid-ct",     "count": 3 },
+    { "type": "vendor-warnings-ct", "count": 2 },
+    { "type": "large-ct",           "count": 1, "rows": 512, "columns": 512, "frames": 100 },
+    { "type": "valid-ct",           "count": 1, "violations": ["uid-too-long", "missing-meta-header"] },
+    { "type": "fake-signature",     "count": 5 },
+    { "type": "non-dicom",          "count": 2, "content": "garbage" },
+    { "type": "dicomdir",           "count": 1 }
+  ],
+  "seed": 42
+}
+```
+
+---
+
+## CLI
+
+```bash
+# From a schema file
+dicom-synth-generate --schema dataset.json --out ./fixtures/generated
+
+# Inline schema
+dicom-synth-generate --schema-inline '{"entries":[{"type":"valid-ct","count":5}]}' --out ./out
+
+# Default output directory is ./fixtures/generated
+dicom-synth-generate --schema dataset.json
+```
+
+The default schema (`examples/default.json`) generates one each of `valid-ct`, `invalid-uid-ct`, and `vendor-warnings-ct`:
+
+```bash
+dicom-synth-generate --schema examples/default.json --out /tmp/out
+# Wrote 3 file(s) to /tmp/out
+#   valid-ct: 1
+#   invalid-uid-ct: 1
+#   vendor-warnings-ct: 1
+```
+
+Schema validation errors exit with code 1 and a descriptive message.
+
+---
+
+## Public fixtures
+
+Catalog metadata lives in `data/public-cases.json`. Fetched binaries are cached at `~/.cache/dicom-synth-testcases/<sha256>/file.dcm`.
+
+### Load and fetch
+
+```ts
+import {
+  loadDefaultCases,
+  loadCaseById,
+  loadCasesFromJson,
+  defaultPublicCasesPath,
+  fetchPublicCaseToCache,
+  caseCachePath,
+} from 'dicom-synth'
+
+// Load all bundled cases
+const cases = loadDefaultCases()
+
+// Load one bundled case by id
+const record = loadCaseById(defaultPublicCasesPath(), 'pydicom-CT-small')
+
+// Load a custom catalogue
+const custom = loadCasesFromJson('./my-cases.json')
+
+// Fetch to local cache, returns the file path
+const path = await fetchPublicCaseToCache(record)
+
+// Resolve the cache path for a known SHA-256 without fetching
+const cached = caseCachePath(record.sha256)
+```
+
+### CI caching
+
+The fetch cache is keyed by SHA-256 so cached files are safe to restore across CI runs. To avoid re-downloading on every run, cache the default cache root:
+
+```yaml
+# GitHub Actions example
+- uses: actions/cache@v4
+  with:
+    path: ~/.cache/dicom-synth-testcases
+    key: dicom-public-fixtures-${{ hashFiles('node_modules/dicom-synth/dist/data/public-cases.json') }}
+```
+
+### Published CLI
+
+```bash
+pnpm --package=dicom-synth@latest dlx dicom-synth-fetch pydicom-CT-small
+```
+
+### Local development
+
+```bash
+pnpm fetch:public-case -- pydicom-CT-small
+```
+
+---
 
 ## Source layout
 
 | Path | Responsibility |
-|------|----------------|
-| `src/syntheticFixtures/generator.ts` | Deterministic synthetic CT generation |
+|---|---|
+| `src/schema/types.ts` | All public TypeScript types (`FileSpec`, `DatasetSpec`, `ViolationClass`, etc.) |
+| `src/schema/validate.ts` | `validateDatasetSpec` — validates a raw JSON value against the schema |
+| `src/syntheticFixtures/generator.ts` | Internal buffer builders keyed on `FileSpec` type |
+| `src/syntheticFixtures/uid.ts` | Seeded and random UID generation |
+| `src/syntheticFixtures/violations.ts` | Post-processing violation injection |
+| `src/collection/writer.ts` | Three-layer API — `generateFile`, `generateCollectionFromSpec`, `writeCollectionFromSpec` |
 | `src/public-fixtures/catalog.ts` | Load bundled public case catalogue |
 | `src/public-fixtures/fetch.ts` | Fetch, SHA-256 verify, content-addressed cache |
-| `scripts/write-synthetic-fixtures.ts` | Dev CLI for synthetic output |
-| `scripts/fetch-public-case.ts` | Dev CLI for public fetch |
-| `bin/dicom-synth-write.mjs` | Published write CLI (requires `pnpm build`) |
+| `bin/dicom-synth-generate.mjs` | Published generate CLI (requires `pnpm build`) |
 | `bin/dicom-synth-fetch.mjs` | Published fetch CLI (requires `pnpm build`) |
+| `examples/default.json` | Default `DatasetSpec` — one each of `valid-ct`, `invalid-uid-ct`, `vendor-warnings-ct` |
+
+---
 
 ## Development
 
@@ -112,24 +405,24 @@ pnpm code:quality
 ```
 
 | Script | Purpose |
-|--------|---------|
-| `pnpm write:synthetic` | Write all synthetic fixtures to a directory |
+|---|---|
+| `pnpm write:synthetic` | Write `examples/default.json` to `fixtures/generated` |
 | `pnpm fetch:public-case` | Fetch one public case by id |
-| `pnpm hooks:pre-commit` | Reproduce commit hook |
-| `pnpm hooks:pre-push` | Reproduce push hook |
+| `pnpm hooks:pre-commit` | Reproduce commit hook locally |
+| `pnpm hooks:pre-push` | Reproduce push hook locally |
 
 Git hooks: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+---
+
 ## Future development
 
-The current release targets stable, deterministic fixtures for conformance basic conformance testing. Planned extensions include:
+- **Multi-series study layouts** — shared `StudyInstanceUID` across files via a `studies` top-level key; no breaking schema change needed
+- **Compressed transfer syntaxes** — JPEG-LS, JPEG 2000, RLE
+- **Modality presets** — MR, PET, CR profiles beyond CT
+- **Private fixture catalogues** — same SHA-256 fetch/cache pattern for credentials-backed sources (e.g. S3)
 
-- **Parameterised synthetic generation** — options for instance count, dimensions, frames, transfer syntax, and modality/profile presets.
-- **Stress and scale** — very large pixel payloads, high file counts, and multi-series study layouts for performance and memory testing.
-- **Seeded variation** — reproducible pseudo-random datasets (fixed seed) for broader coverage without losing determinism in CI.
-- **Conformance modes** — `strict` (standards-valid stress data) vs `edge` (intentional faults for parser and validator hardening).
-- **Private fixture catalogues** — same SHA-256 fetch/cache pattern as public fixtures, for credentials-backed sources (e.g. S3).
-- **Export helpers** — optional upload or packaging of generated datasets for remote CI or shared test stores.
+---
 
 ## License
 
