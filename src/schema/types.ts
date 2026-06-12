@@ -25,6 +25,12 @@ export type Modality = 'CT' | 'PT' | 'MR' | 'CR'
 
 type BaseImageSpec = {
   modality?: Modality // defaults to 'CT'
+  // Sizing: rows+columns (+frames), XOR targetSizeKb (~N KB ±2%/±4 KB).
+  // Omitting both produces a minimal 1×1 image.
+  rows?: number
+  columns?: number
+  frames?: number
+  targetSizeKb?: number
   tags?: DicomTagOverrides
   transferSyntax?: TransferSyntax
   violations?: ViolationClass[]
@@ -34,12 +40,6 @@ export type ValidImageSpec = BaseImageSpec & { type: 'valid-image' }
 export type InvalidUidImageSpec = BaseImageSpec & { type: 'invalid-uid-image' }
 export type VendorWarningsImageSpec = BaseImageSpec & {
   type: 'vendor-warnings-image'
-}
-export type LargeImageSpec = BaseImageSpec & {
-  type: 'large-image'
-  rows: number
-  columns: number
-  frames?: number
 }
 export type FakeSignatureSpec = { type: 'fake-signature' }
 export type NonDicomSpec = { type: 'non-dicom'; content?: string }
@@ -51,7 +51,6 @@ export type ImageSpec =
   | ValidImageSpec
   | InvalidUidImageSpec
   | VendorWarningsImageSpec
-  | LargeImageSpec
 
 // FileSpec: single-file generation parameters — no count, no seed.
 export type FileSpec =

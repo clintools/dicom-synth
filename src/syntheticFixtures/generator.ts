@@ -4,6 +4,7 @@ import { buildDicomdirBuffer } from '../nonStandardDicom/dicomdir.js'
 import type {
   DicomTagOverrides,
   FileSpec,
+  ImageSpec,
   Modality,
   TransferSyntax,
 } from '../schema/types.js'
@@ -149,65 +150,66 @@ function serializeDict(
   return Buffer.from(dicomDict.write({ allowInvalidVRLength: true }))
 }
 
-function buildValidImageBuffer(
-  uid: UidSet,
-  modality: Modality,
-  tags?: DicomTagOverrides,
-  transferSyntax?: TransferSyntax,
-): Buffer {
-  const dataset = buildBaseImageDataset(uid, modality)
-  applyTagOverrides(dataset, tags)
-  return serializeDict(buildMeta(uid, modality, transferSyntax), dataset)
-}
+// US (unsigned short) VR limit for Rows/Columns.
+const MAX_DIMENSION = 65535
 
-function buildInvalidUidImageBuffer(
-  uid: UidSet,
-  modality: Modality,
-  tags?: DicomTagOverrides,
-  transferSyntax?: TransferSyntax,
-): Buffer {
-  // UIDs contain the string "study"/"series"/"sop" — non-numeric, non-conformant.
-  const invalidUid = {
-    study: `2.25.invalid.study.${uid.study.slice(-6)}`,
-    series: `2.25.invalid.series.${uid.series.slice(-6)}`,
-    sop: `2.25.invalid.sop.${uid.sop.slice(-6)}`,
+// targetSizeKb: probe-serialize to measure the non-pixel overhead (varies
+// with tags/transfer syntax), then pad PixelData to land at ~targetSizeKb.
+function applySizing(
+  dataset: Record<string, unknown>,
+  meta: Record<string, unknown>,
+  spec: ImageSpec,
+): void {
+  if (spec.targetSizeKb !== undefined) {
+    const clampDim = (n: number) =>
+      Math.min(MAX_DIMENSION, Math.max(1, Math.round(n)))
+    const minimalPixelBytes = (dataset.PixelData as ArrayBuffer).byteLength
+    const overhead = serializeDict(meta, dataset).length - minimalPixelBytes
+    const cells = Math.max(
+      1,
+      Math.round((spec.targetSizeKb * 1024 - overhead) / 2),
+    )
+    const rows = clampDim(Math.sqrt(cells))
+    const columns = clampDim(cells / rows)
+    dataset.Rows = rows
+    dataset.Columns = columns
+    dataset.PixelData = new ArrayBuffer(rows * columns * 2)
+  } else if (spec.rows !== undefined && spec.columns !== undefined) {
+    dataset.Rows = spec.rows
+    dataset.Columns = spec.columns
+    if (spec.frames !== undefined) dataset.NumberOfFrames = spec.frames
+    // 16-bit pixels, 2 bytes per cell
+    dataset.PixelData = new ArrayBuffer(
+      spec.rows * spec.columns * (spec.frames ?? 1) * 2,
+    )
   }
-  const dataset = buildBaseImageDataset(invalidUid, modality)
-  applyTagOverrides(dataset, tags)
-  return serializeDict(buildMeta(invalidUid, modality, transferSyntax), dataset)
 }
 
-function buildVendorWarningsImageBuffer(
-  uid: UidSet,
-  modality: Modality,
-  tags?: DicomTagOverrides,
-  transferSyntax?: TransferSyntax,
-): Buffer {
-  // Vendor defaults set first so that user tag overrides can win.
-  const dataset = buildBaseImageDataset(uid, modality)
-  dataset.Laterality = ''
-  dataset.PatientWeight = '0'
-  applyTagOverrides(dataset, tags)
-  return serializeDict(buildMeta(uid, modality, transferSyntax), dataset)
-}
+function buildImageBuffer(spec: ImageSpec, uid: UidSet): Buffer {
+  const modality = spec.modality ?? 'CT'
 
-function buildLargeImageBuffer(
-  uid: UidSet,
-  modality: Modality,
-  rows: number,
-  columns: number,
-  frames: number,
-  tags?: DicomTagOverrides,
-  transferSyntax?: TransferSyntax,
-): Buffer {
-  const dataset = buildBaseImageDataset(uid, modality)
-  dataset.Rows = rows
-  dataset.Columns = columns
-  dataset.NumberOfFrames = frames
-  // 16-bit signed, 2 bytes per pixel
-  dataset.PixelData = new Uint8Array(rows * columns * frames * 2).buffer
-  applyTagOverrides(dataset, tags)
-  return serializeDict(buildMeta(uid, modality, transferSyntax), dataset)
+  // UIDs contain the string "study"/"series"/"sop" — non-numeric, non-conformant.
+  const effectiveUid =
+    spec.type === 'invalid-uid-image'
+      ? {
+          study: `2.25.invalid.study.${uid.study.slice(-6)}`,
+          series: `2.25.invalid.series.${uid.series.slice(-6)}`,
+          sop: `2.25.invalid.sop.${uid.sop.slice(-6)}`,
+        }
+      : uid
+
+  const dataset = buildBaseImageDataset(effectiveUid, modality)
+  if (spec.type === 'vendor-warnings-image') {
+    // Vendor defaults set first so that user tag overrides can win.
+    dataset.Laterality = ''
+    dataset.PatientWeight = '0'
+  }
+  applyTagOverrides(dataset, spec.tags)
+
+  // Sizing after tag overrides so the probe measures the final overhead.
+  const meta = buildMeta(effectiveUid, modality, spec.transferSyntax)
+  applySizing(dataset, meta, spec)
+  return serializeDict(meta, dataset)
 }
 
 function buildFakeSignatureBuffer(): Buffer {
@@ -223,36 +225,9 @@ function buildNonDicomBuffer(content = 'not dicom'): Buffer {
 export function buildBufferForSpec(spec: FileSpec, uid: UidSet): Buffer {
   switch (spec.type) {
     case 'valid-image':
-      return buildValidImageBuffer(
-        uid,
-        spec.modality ?? 'CT',
-        spec.tags,
-        spec.transferSyntax,
-      )
     case 'invalid-uid-image':
-      return buildInvalidUidImageBuffer(
-        uid,
-        spec.modality ?? 'CT',
-        spec.tags,
-        spec.transferSyntax,
-      )
     case 'vendor-warnings-image':
-      return buildVendorWarningsImageBuffer(
-        uid,
-        spec.modality ?? 'CT',
-        spec.tags,
-        spec.transferSyntax,
-      )
-    case 'large-image':
-      return buildLargeImageBuffer(
-        uid,
-        spec.modality ?? 'CT',
-        spec.rows,
-        spec.columns,
-        spec.frames ?? 1,
-        spec.tags,
-        spec.transferSyntax,
-      )
+      return buildImageBuffer(spec, uid)
     case 'fake-signature':
       return buildFakeSignatureBuffer()
     case 'non-dicom':

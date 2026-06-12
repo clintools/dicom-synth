@@ -31,7 +31,6 @@ export type {
   FileSpec,
   ImageSpec,
   InvalidUidImageSpec,
-  LargeImageSpec,
   Modality,
   NonDicomSpec,
   SeriesEntrySpec,
