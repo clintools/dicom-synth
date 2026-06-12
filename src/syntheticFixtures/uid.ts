@@ -29,6 +29,55 @@ function seededUid(next: () => number, role: UidRole): string {
   return formatUid(next(), next(), role)
 }
 
+// Offsets the group UID streams away from the per-file streams so a grouped
+// study/series UID cannot collide with a flat file's UID at the same index.
+const GROUP_STREAM_OFFSET = 0x9e3779b9
+
+// All seeded UID streams derive their LCG seed here; the offset separates
+// stream domains and the prime multipliers separate indices within a domain.
+function seededStream(
+  seed: number,
+  offset: number,
+  a: number,
+  b: number,
+): () => number {
+  return lcg((seed * 999983 + offset + a * 1000003 + b * 7919) >>> 0)
+}
+
+export type GroupUidGenerator = {
+  study: (studyIndex: number) => string
+  series: (studyIndex: number, seriesIndex: number) => string
+}
+
+// Shared study/series UIDs for grouped collections — deterministic per
+// (seed, studyIndex[, seriesIndex]), random when seed is omitted.
+export function makeGroupUidGenerator(seed?: number): GroupUidGenerator {
+  if (seed === undefined) {
+    return {
+      study: () => randomUid('study'),
+      series: () => randomUid('series'),
+    }
+  }
+
+  return {
+    study: (studyIndex) =>
+      seededUid(
+        seededStream(seed, GROUP_STREAM_OFFSET, studyIndex + 1, 0),
+        'study',
+      ),
+    series: (studyIndex, seriesIndex) =>
+      seededUid(
+        seededStream(
+          seed,
+          GROUP_STREAM_OFFSET,
+          studyIndex + 1,
+          seriesIndex + 1,
+        ),
+        'series',
+      ),
+  }
+}
+
 export type UidGenerator = (fileIndex: number) => UidSet
 
 export function makeUidGenerator(seed?: number): UidGenerator {
@@ -43,7 +92,7 @@ export function makeUidGenerator(seed?: number): UidGenerator {
   // Seed the PRNG with a combination of the dataset seed and the file index so
   // UIDs are both deterministic per (seed, index) pair and unique across files.
   return (fileIndex: number) => {
-    const next = lcg((seed * 999983 + fileIndex * 1000003) >>> 0)
+    const next = seededStream(seed, 0, fileIndex, 0)
     return {
       study: seededUid(next, 'study'),
       series: seededUid(next, 'series'),

@@ -39,12 +39,18 @@ export type FakeSignatureSpec = { type: 'fake-signature' }
 export type NonDicomSpec = { type: 'non-dicom'; content?: string }
 export type DicomdirSpec = { type: 'dicomdir' }
 
-// FileSpec: single-file generation parameters — no count, no seed.
-export type FileSpec =
+// Image-generating specs: carry tags/violations/transferSyntax and can
+// participate in study/series grouping. Currently CT-flavoured defaults; a
+// modality field will parameterise these without changing the union.
+export type ImageSpec =
   | ValidCtSpec
   | InvalidUidCtSpec
   | VendorCtSpec
   | LargeCtSpec
+
+// FileSpec: single-file generation parameters — no count, no seed.
+export type FileSpec =
+  | ImageSpec
   | FakeSignatureSpec
   | NonDicomSpec
   | DicomdirSpec
@@ -53,7 +59,29 @@ export type FileSpec =
 // Only DatasetSpec / generateCollectionFromSpec ever sees EntrySpec.
 export type EntrySpec = FileSpec & { count?: number }
 
+// SeriesSpec: files sharing one SeriesInstanceUID. Only image-generating types
+// can be grouped — shared UIDs flow through the generator's UidSet channel.
+export type SeriesEntrySpec = ImageSpec & { count?: number }
+
+export type SeriesSpec = {
+  entries: SeriesEntrySpec[]
+  tags?: DicomTagOverrides
+}
+
+// StudySpec: series sharing one StudyInstanceUID; count generates N copies of
+// the whole study, each with fresh UIDs.
+export type StudySpec = {
+  series: SeriesSpec[]
+  tags?: DicomTagOverrides
+  count?: number
+}
+
+// hierarchical: grouped files written as study-NNN/series-NNN/NNNNN.dcm.
+export type DatasetLayout = 'flat' | 'hierarchical'
+
 export type DatasetSpec = {
-  entries: EntrySpec[]
+  entries?: EntrySpec[]
+  studies?: StudySpec[]
   seed?: number
+  layout?: DatasetLayout
 }

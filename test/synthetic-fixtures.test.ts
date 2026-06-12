@@ -1,24 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { generateFile } from '../src/collection/writer'
-import { dcmjs } from '../src/loadDcmjs'
-
-const dcmjsAny = dcmjs as unknown as {
-  data: {
-    DicomMessage: { readFile: (ab: ArrayBuffer) => { dict: unknown } }
-    DicomMetaDictionary: {
-      naturalizeDataset: (ds: unknown) => Record<string, unknown>
-    }
-  }
-}
-
-function parseNatural(buffer: Buffer): Record<string, unknown> {
-  const ab = buffer.buffer.slice(
-    buffer.byteOffset,
-    buffer.byteOffset + buffer.byteLength,
-  ) as ArrayBuffer
-  const parsed = dcmjsAny.data.DicomMessage.readFile(ab)
-  return dcmjsAny.data.DicomMetaDictionary.naturalizeDataset(parsed.dict)
-}
+import { parseNatural } from './helpers/dicom'
 
 function assertImplicitVr(buffer: Buffer): void {
   const bin = buffer.toString('binary')

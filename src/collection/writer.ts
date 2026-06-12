@@ -1,13 +1,26 @@
 import { mkdirSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
-import type { DatasetSpec, FileSpec } from '../schema/types.js'
+import { dirname, resolve } from 'node:path'
+import type {
+  DatasetSpec,
+  DicomTagOverrides,
+  EntrySpec,
+  FileSpec,
+  StudySpec,
+} from '../schema/types.js'
 import { buildBufferForSpec } from '../syntheticFixtures/generator.js'
-import { makeUidGenerator } from '../syntheticFixtures/uid.js'
+import type { UidSet } from '../syntheticFixtures/uid.js'
+import {
+  makeGroupUidGenerator,
+  makeUidGenerator,
+} from '../syntheticFixtures/uid.js'
 import { applyViolations } from '../syntheticFixtures/violations.js'
 
 export type GeneratedFile = {
   filename: string
+  // Path relative to the collection root — equals filename except for grouped
+  // files under layout: 'hierarchical' (study-NNN/series-NNN/NNNNN.dcm).
+  relativePath: string
   buffer: Buffer
   type: FileSpec['type']
   index: number
@@ -34,18 +47,39 @@ function filename(
   return NO_EXTENSION_TYPES.has(type) ? base : `${base}.dcm`
 }
 
+function entryCount(entries: EntrySpec[]): number {
+  return entries.reduce((sum, e) => sum + (e.count ?? 1), 0)
+}
+
+function studyFileCount(studies: StudySpec[]): number {
+  return studies.reduce(
+    (sum, study) =>
+      sum +
+      (study.count ?? 1) *
+        study.series.reduce((s, series) => s + entryCount(series.entries), 0),
+    0,
+  )
+}
+
 // Layer 1 — single file, no I/O.
 // options.index: position within a collection (defaults to 0 for ad-hoc calls).
 // options.seed:  drives the seeded PRNG for UID generation; omit for random UIDs.
 // options.padWidth: zero-pad digit width for the filename index (defaults to 3).
+// options.uid:   overrides individual UIDs — how the collection layer threads
+//                shared study/series UIDs into grouped files.
 export async function generateFile(
   spec: FileSpec,
-  options?: { index?: number; seed?: number; padWidth?: number },
+  options?: {
+    index?: number
+    seed?: number
+    padWidth?: number
+    uid?: Partial<UidSet>
+  },
 ): Promise<GeneratedFile> {
   const index = options?.index ?? 0
   const padWidth = options?.padWidth ?? 3
   const uidGen = makeUidGenerator(options?.seed)
-  const uid = uidGen(index)
+  const uid = { ...uidGen(index), ...options?.uid }
 
   let buffer = buildBufferForSpec(spec, uid)
 
@@ -54,25 +88,46 @@ export async function generateFile(
     buffer = applyViolations(buffer, violations)
   }
 
+  const name = filename(spec.type, index, padWidth)
   return {
-    filename: filename(spec.type, index, padWidth),
+    filename: name,
+    relativePath: name,
     buffer,
     type: spec.type,
     index,
   }
 }
 
+// Grouped-file naming under layout: 'hierarchical'.
+function hierarchicalName(
+  studyOrdinal: number,
+  seriesIndex: number,
+  instanceNumber: number,
+): { filename: string; relativePath: string } {
+  const pad3 = (n: number) => String(n).padStart(3, '0')
+  const name = `${String(instanceNumber).padStart(5, '0')}.dcm`
+  return {
+    filename: name,
+    relativePath: `study-${pad3(studyOrdinal + 1)}/series-${pad3(seriesIndex + 1)}/${name}`,
+  }
+}
+
 // Layer 2 — collection stream, no I/O.
-// Expands each EntrySpec by count, threads spec.seed and a global file index
-// into each generateFile call so UIDs are deterministic and non-colliding.
+// Flat entries keep their own study/series UIDs per file. Grouped studies share
+// a StudyInstanceUID per study copy and a SeriesInstanceUID per series, threaded
+// through the generator's UidSet channel; user-supplied tags still win.
 export async function* generateCollectionFromSpec(
   spec: DatasetSpec,
 ): AsyncGenerator<GeneratedFile> {
-  const totalFiles = spec.entries.reduce((sum, e) => sum + (e.count ?? 1), 0)
+  const flatEntries = spec.entries ?? []
+  const studies = spec.studies ?? []
+  const totalFiles = entryCount(flatEntries) + studyFileCount(studies)
   const padWidth = String(totalFiles).length
+  const hierarchical = spec.layout === 'hierarchical'
 
   let globalIndex = 0
-  for (const entry of spec.entries) {
+
+  for (const entry of flatEntries) {
     const { count = 1, ...fileSpec } = entry as FileSpec & { count?: number }
     for (let i = 0; i < count; i++) {
       yield generateFile(fileSpec as FileSpec, {
@@ -81,6 +136,52 @@ export async function* generateCollectionFromSpec(
         padWidth,
       })
       globalIndex++
+    }
+  }
+
+  const groupUids = makeGroupUidGenerator(spec.seed)
+  let studyOrdinal = 0
+  for (const study of studies) {
+    const copies = study.count ?? 1
+    for (let copy = 0; copy < copies; copy++) {
+      const studyUid = groupUids.study(studyOrdinal)
+      for (const [seriesIndex, series] of study.series.entries()) {
+        const seriesUid = groupUids.series(studyOrdinal, seriesIndex)
+        let instanceNumber = 0
+        for (const entry of series.entries) {
+          const { count = 1, ...fileSpec } = entry
+          for (let i = 0; i < count; i++) {
+            instanceNumber++
+            const tags: DicomTagOverrides = {
+              InstanceNumber: instanceNumber,
+              ...study.tags,
+              ...series.tags,
+              ...fileSpec.tags,
+            }
+            const file = await generateFile(
+              { ...fileSpec, tags },
+              {
+                index: globalIndex,
+                seed: spec.seed,
+                padWidth,
+                uid: { study: studyUid, series: seriesUid },
+              },
+            )
+            yield hierarchical
+              ? {
+                  ...file,
+                  ...hierarchicalName(
+                    studyOrdinal,
+                    seriesIndex,
+                    instanceNumber,
+                  ),
+                }
+              : file
+            globalIndex++
+          }
+        }
+      }
+      studyOrdinal++
     }
   }
 }
@@ -94,8 +195,14 @@ export async function writeCollectionFromSpec(
   mkdirSync(root, { recursive: true })
 
   const manifest: CollectionManifest = []
+  const createdDirs = new Set<string>([root])
   for await (const file of generateCollectionFromSpec(spec)) {
-    const filePath = resolve(root, file.filename)
+    const filePath = resolve(root, file.relativePath)
+    const dir = dirname(filePath)
+    if (!createdDirs.has(dir)) {
+      mkdirSync(dir, { recursive: true })
+      createdDirs.add(dir)
+    }
     await writeFile(filePath, file.buffer)
     manifest.push({ path: filePath, type: file.type, index: file.index })
   }
