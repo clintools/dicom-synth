@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/clintools/dicom-synth/compare/v1.1.0...v1.2.0) (2026-06-12)
+
+
+### Features
+
+* add study/series grouping, hierarchical layout, and InstanceNumber sequencing ([316eb5c](https://github.com/clintools/dicom-synth/commit/316eb5c759006e5b96c80772fcfa1f519df36152))
+
 # [1.1.0](https://github.com/clintools/dicom-synth/compare/v1.0.1...v1.1.0) (2026-06-11)
 
 
