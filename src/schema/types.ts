@@ -20,17 +20,23 @@ export type ViolationClass =
   | 'vr-max-length-exceeded' // LO field value exceeds 64-character VR limit
   | 'missing-type1-tag' // SOPClassUID (Type 1 mandatory) removed from dataset
 
-type BaseCtSpec = {
+// Each preset sets the matching SOP Class UID and minimal type-1 attributes.
+export type Modality = 'CT' | 'PT' | 'MR' | 'CR'
+
+type BaseImageSpec = {
+  modality?: Modality // defaults to 'CT'
   tags?: DicomTagOverrides
   transferSyntax?: TransferSyntax
   violations?: ViolationClass[]
 }
 
-export type ValidCtSpec = BaseCtSpec & { type: 'valid-ct' }
-export type InvalidUidCtSpec = BaseCtSpec & { type: 'invalid-uid-ct' }
-export type VendorCtSpec = BaseCtSpec & { type: 'vendor-warnings-ct' }
-export type LargeCtSpec = BaseCtSpec & {
-  type: 'large-ct'
+export type ValidImageSpec = BaseImageSpec & { type: 'valid-image' }
+export type InvalidUidImageSpec = BaseImageSpec & { type: 'invalid-uid-image' }
+export type VendorWarningsImageSpec = BaseImageSpec & {
+  type: 'vendor-warnings-image'
+}
+export type LargeImageSpec = BaseImageSpec & {
+  type: 'large-image'
   rows: number
   columns: number
   frames?: number
@@ -39,14 +45,13 @@ export type FakeSignatureSpec = { type: 'fake-signature' }
 export type NonDicomSpec = { type: 'non-dicom'; content?: string }
 export type DicomdirSpec = { type: 'dicomdir' }
 
-// Image-generating specs: carry tags/violations/transferSyntax and can
-// participate in study/series grouping. Currently CT-flavoured defaults; a
-// modality field will parameterise these without changing the union.
+// Image-generating specs: carry modality/tags/violations/transferSyntax and
+// can participate in study/series grouping.
 export type ImageSpec =
-  | ValidCtSpec
-  | InvalidUidCtSpec
-  | VendorCtSpec
-  | LargeCtSpec
+  | ValidImageSpec
+  | InvalidUidImageSpec
+  | VendorWarningsImageSpec
+  | LargeImageSpec
 
 // FileSpec: single-file generation parameters — no count, no seed.
 export type FileSpec =

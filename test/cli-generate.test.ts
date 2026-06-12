@@ -85,7 +85,7 @@ describe('dicom-synth-generate CLI', () => {
     'writes correct file count from inline schema',
     async () => {
       const inline = JSON.stringify({
-        entries: [{ type: 'valid-ct', count: 5 }],
+        entries: [{ type: 'valid-image', count: 5 }],
       })
       const { code, stdout } = await run([
         '--schema-inline',
@@ -102,7 +102,7 @@ describe('dicom-synth-generate CLI', () => {
   it.skipIf(!hasBuild)('prints a summary by type', async () => {
     const inline = JSON.stringify({
       entries: [
-        { type: 'valid-ct', count: 2 },
+        { type: 'valid-image', count: 2 },
         { type: 'fake-signature', count: 1 },
       ],
     })
@@ -113,7 +113,7 @@ describe('dicom-synth-generate CLI', () => {
       tmpDir,
     ])
     expect(code).toBe(0)
-    expect(stdout).toMatch(/valid-ct.*2/)
+    expect(stdout).toMatch(/valid-image.*2/)
     expect(stdout).toMatch(/fake-signature.*1/)
   })
 })
