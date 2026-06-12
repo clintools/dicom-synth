@@ -4,7 +4,7 @@ Schema-driven **synthetic DICOM fixture generation** and **public fixture** fetc
 
 ## Disclaimer
 
-Still in early release. APIs may change without notice.
+⚠️ Still in early release. APIs may change without notice. Version 2+ will be the first stable release ⚠️
 
 ## Install
 
@@ -24,16 +24,16 @@ Generation is a three-layer API. Each layer is a thin wrapper over the one below
 ```ts
 import { generateFile } from 'dicom-synth'
 
-const { buffer, filename, type, index } = await generateFile({ type: 'valid-ct' })
+const { buffer, filename, type, index } = await generateFile({ type: 'valid-image' })
 // buffer: Buffer ready to write or pass to a parser
-// filename: 'valid-ct-000.dcm'
+// filename: 'valid-image-000.dcm'
 ```
 
 With options:
 
 ```ts
 const { buffer } = await generateFile(
-  { type: 'valid-ct', tags: { PatientID: 'P001' }, violations: ['uid-too-long'] },
+  { type: 'valid-image', tags: { PatientID: 'P001' }, violations: ['uid-too-long'] },
   { seed: 42, index: 7 },
 )
 ```
@@ -44,7 +44,7 @@ Write a single file to disk:
 import { writeFileSync } from 'node:fs'
 import { generateFile } from 'dicom-synth'
 
-const { buffer, filename } = await generateFile({ type: 'valid-ct' })
+const { buffer, filename } = await generateFile({ type: 'valid-image' })
 writeFileSync(`./out/${filename}`, buffer)
 ```
 
@@ -55,8 +55,8 @@ import { generateCollectionFromSpec } from 'dicom-synth'
 
 for await (const file of generateCollectionFromSpec({
   entries: [
-    { type: 'valid-ct', count: 10 },
-    { type: 'invalid-uid-ct', count: 3 },
+    { type: 'valid-image', count: 10 },
+    { type: 'invalid-uid-image', count: 3 },
   ],
   seed: 42,
 })) {
@@ -72,7 +72,7 @@ Files are yielded one at a time — safe to pipe without buffering the entire co
 import { writeCollectionFromSpec } from 'dicom-synth'
 
 const manifest = await writeCollectionFromSpec(
-  { entries: [{ type: 'valid-ct', count: 5 }], seed: 42 },
+  { entries: [{ type: 'valid-image', count: 5 }], seed: 42 },
   './fixtures/generated',
 )
 // manifest: Array<{ path: string; type: string; index: number }>
@@ -95,7 +95,7 @@ import { writeCollectionFromSpec } from 'dicom-synth'
 const dir = await mkdtemp(join(tmpdir(), 'synth-'))
 try {
   await writeCollectionFromSpec(
-    { entries: [{ type: 'valid-ct', count: 3 }], seed: 42 },
+    { entries: [{ type: 'valid-image', count: 3 }], seed: 42 },
     dir,
   )
   // run pipeline against dir
@@ -148,7 +148,7 @@ Use layer 2 when passing generated files directly to a parser or pipeline withou
 import { generateCollectionFromSpec, type GeneratedFile } from 'dicom-synth'
 
 const files: GeneratedFile[] = []
-for await (const file of generateCollectionFromSpec({ entries: [{ type: 'valid-ct', count: 5 }] })) {
+for await (const file of generateCollectionFromSpec({ entries: [{ type: 'valid-image', count: 5 }] })) {
   files.push(file)
 }
 ```
@@ -175,7 +175,7 @@ type DatasetSpec = {
 An `EntrySpec` is a `FileSpec` plus an optional `count` field (how many times to generate it):
 
 ```json
-{ "type": "valid-ct", "count": 10 }
+{ "type": "valid-image", "count": 10 }
 ```
 
 `count` defaults to 1 and must be a positive integer. It is a collection-layer concern — `generateFile` does not accept `count`.
@@ -184,18 +184,18 @@ An `EntrySpec` is a `FileSpec` plus an optional `count` field (how many times to
 
 | Type | Description | Conformance |
 |---|---|---|
-| `valid-ct` | Standards-valid CT image; numeric UIDs, complete meta header | strict |
-| `invalid-uid-ct` | CT with non-numeric UIDs (letters in UID components) | edge |
-| `vendor-warnings-ct` | CT with empty `Laterality` and `PatientWeight = 0` — produces dciodvfy warnings | edge |
-| `large-ct` | CT with configurable pixel dimensions; `rows` and `columns` required | strict |
+| `valid-image` | Standards-valid CT image; numeric UIDs, complete meta header | strict |
+| `invalid-uid-image` | CT with non-numeric UIDs (letters in UID components) | edge |
+| `vendor-warnings-image` | CT with empty `Laterality` and `PatientWeight = 0` — produces dciodvfy warnings | edge |
+| `large-image` | CT with configurable pixel dimensions; `rows` and `columns` required | strict |
 | `fake-signature` | 200-byte buffer with `XXXX` at preamble offset — no DICM magic | edge |
 | `non-dicom` | Arbitrary text buffer; no extension in filename | edge |
 | `dicomdir` | Minimal DICOMDIR file | strict |
 
-**`large-ct` fields:**
+**`large-image` fields:**
 
 ```json
-{ "type": "large-ct", "rows": 512, "columns": 512, "frames": 100 }
+{ "type": "large-image", "rows": 512, "columns": 512, "frames": 100 }
 ```
 
 `frames` defaults to 1. A 512×512×100 CT produces a buffer of ~52 MB.
@@ -210,11 +210,11 @@ An `EntrySpec` is a `FileSpec` plus an optional `count` field (how many times to
 
 ### Tag overrides (`tags`)
 
-Available on `valid-ct`, `invalid-uid-ct`, `vendor-warnings-ct`, and `large-ct`.
+Available on `valid-image`, `invalid-uid-image`, `vendor-warnings-image`, and `large-image`.
 
 ```json
 {
-  "type": "valid-ct",
+  "type": "valid-image",
   "tags": {
     "PatientID": "P001",
     "PatientName": "DOE^JANE",
@@ -231,7 +231,7 @@ import type { DicomTagOverrides } from 'dicom-synth'
 
 ### Transfer syntax (`transferSyntax`)
 
-Available on `valid-ct`, `invalid-uid-ct`, `vendor-warnings-ct`, and `large-ct`.
+Available on `valid-image`, `invalid-uid-image`, `vendor-warnings-image`, and `large-image`.
 
 | Value | `TransferSyntaxUID` in meta header |
 |---|---|
@@ -241,7 +241,7 @@ Available on `valid-ct`, `invalid-uid-ct`, `vendor-warnings-ct`, and `large-ct`.
 
 ### Violation injection (`violations`)
 
-Available on `valid-ct`, `invalid-uid-ct`, `vendor-warnings-ct`, and `large-ct`. Violations are applied as post-processing transforms to an otherwise valid buffer.
+Available on `valid-image`, `invalid-uid-image`, `vendor-warnings-image`, and `large-image`. Violations are applied as post-processing transforms to an otherwise valid buffer.
 
 | Violation | Effect | Detectable by dciodvfy |
 |---|---|---|
@@ -255,7 +255,7 @@ Available on `valid-ct`, `invalid-uid-ct`, `vendor-warnings-ct`, and `large-ct`.
 Tag-level violations are applied before byte-level violations. Byte-level violations may produce a buffer that cannot be re-parsed.
 
 ```json
-{ "type": "valid-ct", "violations": ["uid-too-long", "missing-meta-header"] }
+{ "type": "valid-image", "violations": ["uid-too-long", "missing-meta-header"] }
 ```
 
 ```ts
@@ -277,11 +277,11 @@ The validator throws with a human-readable message on any structural error.
 ```json
 {
   "entries": [
-    { "type": "valid-ct",           "count": 10, "tags": { "PatientID": "P001" }, "transferSyntax": "explicit-vr-little-endian" },
-    { "type": "invalid-uid-ct",     "count": 3 },
-    { "type": "vendor-warnings-ct", "count": 2 },
-    { "type": "large-ct",           "count": 1, "rows": 512, "columns": 512, "frames": 100 },
-    { "type": "valid-ct",           "count": 1, "violations": ["uid-too-long", "missing-meta-header"] },
+    { "type": "valid-image",           "count": 10, "tags": { "PatientID": "P001" }, "transferSyntax": "explicit-vr-little-endian" },
+    { "type": "invalid-uid-image",     "count": 3 },
+    { "type": "vendor-warnings-image", "count": 2 },
+    { "type": "large-image",           "count": 1, "rows": 512, "columns": 512, "frames": 100 },
+    { "type": "valid-image",           "count": 1, "violations": ["uid-too-long", "missing-meta-header"] },
     { "type": "fake-signature",     "count": 5 },
     { "type": "non-dicom",          "count": 2, "content": "garbage" },
     { "type": "dicomdir",           "count": 1 }
@@ -299,20 +299,20 @@ The validator throws with a human-readable message on any structural error.
 dicom-synth-generate --schema dataset.json --out ./fixtures/generated
 
 # Inline schema
-dicom-synth-generate --schema-inline '{"entries":[{"type":"valid-ct","count":5}]}' --out ./out
+dicom-synth-generate --schema-inline '{"entries":[{"type":"valid-image","count":5}]}' --out ./out
 
 # Default output directory is ./fixtures/generated
 dicom-synth-generate --schema dataset.json
 ```
 
-The default schema (`examples/default.json`) generates one each of `valid-ct`, `invalid-uid-ct`, and `vendor-warnings-ct`:
+The default schema (`examples/default.json`) generates one each of `valid-image`, `invalid-uid-image`, and `vendor-warnings-image`:
 
 ```bash
 dicom-synth-generate --schema examples/default.json --out /tmp/out
 # Wrote 3 file(s) to /tmp/out
-#   valid-ct: 1
-#   invalid-uid-ct: 1
-#   vendor-warnings-ct: 1
+#   valid-image: 1
+#   invalid-uid-image: 1
+#   vendor-warnings-image: 1
 ```
 
 Schema validation errors exit with code 1 and a descriptive message.
@@ -391,7 +391,7 @@ pnpm fetch:public-case -- pydicom-CT-small
 | `src/public-fixtures/fetch.ts` | Fetch, SHA-256 verify, content-addressed cache |
 | `bin/dicom-synth-generate.mjs` | Published generate CLI (requires `pnpm build`) |
 | `bin/dicom-synth-fetch.mjs` | Published fetch CLI (requires `pnpm build`) |
-| `examples/default.json` | Default `DatasetSpec` — one each of `valid-ct`, `invalid-uid-ct`, `vendor-warnings-ct` |
+| `examples/default.json` | Default `DatasetSpec` — one each of `valid-image`, `invalid-uid-image`, `vendor-warnings-image` |
 
 ---
 
