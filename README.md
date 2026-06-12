@@ -191,18 +191,9 @@ An `EntrySpec` is a `FileSpec` plus an optional `count` field (how many times to
 | `valid-image` | Standards-valid image (CT by default — see `modality`); numeric UIDs, complete meta header | strict |
 | `invalid-uid-image` | Image with non-numeric UIDs (letters in UID components) | edge |
 | `vendor-warnings-image` | Image with empty `Laterality` and `PatientWeight = 0` — produces dciodvfy warnings | edge |
-| `large-image` | Image with configurable pixel dimensions; `rows` and `columns` required | strict |
 | `fake-signature` | 200-byte buffer with `XXXX` at preamble offset — no DICM magic | edge |
 | `non-dicom` | Arbitrary text buffer; no extension in filename | edge |
 | `dicomdir` | Minimal DICOMDIR file | strict |
-
-**`large-image` fields:**
-
-```json
-{ "type": "large-image", "rows": 512, "columns": 512, "frames": 100 }
-```
-
-`frames` defaults to 1. A 512×512×100 image produces a buffer of ~52 MB.
 
 **`non-dicom` fields:**
 
@@ -212,9 +203,31 @@ An `EntrySpec` is a `FileSpec` plus an optional `count` field (how many times to
 
 `content` defaults to `"not dicom"`.
 
+### Sizing (`rows`/`columns`/`frames` or `targetSizeKb`)
+
+Available on all image types. Two mutually exclusive mechanisms; omitting both produces a minimal 1×1 image.
+
+**Explicit pixel dimensions** — for geometry-shaped cases (large frames, strips, multi-frame):
+
+```json
+{ "type": "valid-image", "rows": 512, "columns": 512, "frames": 100 }
+```
+
+`rows` and `columns` must be provided together; `frames` defaults to 1. A 512×512×100 image produces a buffer of ~52 MB.
+
+**Target file size** — for byte-shaped cases (upload limits, memory ceilings):
+
+```json
+{ "type": "valid-image", "targetSizeKb": 250000 }
+```
+
+Pads `PixelData` so the file lands within ±2% or ±4 KB of the target (whichever is larger), accounting for tag and transfer-syntax overhead. `Rows`/`Columns` stay consistent with the pixel data, so the file remains conformant.
+
+Both mechanisms are capped at 512 MB of pixel data to prevent accidental OOM. A target smaller than the file's fixed overhead (roughly 1 KB) produces the minimal possible file, slightly above target. When sizing fields are set they control `Rows`, `Columns`, and `PixelData` — tag overrides of those keywords do not apply.
+
 ### Modality presets (`modality`)
 
-Available on `valid-image`, `invalid-uid-image`, `vendor-warnings-image`, and `large-image`. Defaults to `CT`.
+Available on all image types. Defaults to `CT`.
 
 ```json
 { "type": "valid-image", "modality": "PT" }
@@ -276,7 +289,7 @@ import type { StudySpec, SeriesSpec, SeriesEntrySpec } from 'dicom-synth'
 
 ### Tag overrides (`tags`)
 
-Available on `valid-image`, `invalid-uid-image`, `vendor-warnings-image`, and `large-image`.
+Available on all image types.
 
 ```json
 {
@@ -297,7 +310,7 @@ import type { DicomTagOverrides } from 'dicom-synth'
 
 ### Transfer syntax (`transferSyntax`)
 
-Available on `valid-image`, `invalid-uid-image`, `vendor-warnings-image`, and `large-image`.
+Available on all image types.
 
 | Value | `TransferSyntaxUID` in meta header |
 |---|---|
@@ -307,7 +320,7 @@ Available on `valid-image`, `invalid-uid-image`, `vendor-warnings-image`, and `l
 
 ### Violation injection (`violations`)
 
-Available on `valid-image`, `invalid-uid-image`, `vendor-warnings-image`, and `large-image`. Violations are applied as post-processing transforms to an otherwise valid buffer.
+Available on all image types. Violations are applied as post-processing transforms to an otherwise valid buffer.
 
 | Violation | Effect | Detectable by dciodvfy |
 |---|---|---|
@@ -346,7 +359,8 @@ The validator throws with a human-readable message on any structural error.
     { "type": "valid-image",           "count": 10, "tags": { "PatientID": "P001" }, "transferSyntax": "explicit-vr-little-endian" },
     { "type": "invalid-uid-image",     "count": 3 },
     { "type": "vendor-warnings-image", "count": 2 },
-    { "type": "large-image",           "count": 1, "rows": 512, "columns": 512, "frames": 100 },
+    { "type": "valid-image",           "count": 1, "rows": 512, "columns": 512, "frames": 100 },
+    { "type": "valid-image",           "count": 1, "targetSizeKb": 250000 },
     { "type": "valid-image",           "count": 1, "violations": ["uid-too-long", "missing-meta-header"] },
     { "type": "fake-signature",     "count": 5 },
     { "type": "non-dicom",          "count": 2, "content": "garbage" },

@@ -134,8 +134,7 @@ describe('generateFile — modality presets', () => {
       type: 'valid-image',
       modality: 'PT',
     })
-    // The PET SOP Class must replace CT's everywhere — including the meta
-    // header's MediaStorageSOPClassUID, so no CT UID remains in the buffer.
+    // PET SOP Class must also replace CT's in the meta header — no CT UID anywhere.
     expect(buffer.toString('binary')).toContain(SOP_CLASS.PT)
     expect(buffer.toString('binary')).not.toContain(SOP_CLASS.CT)
   })
@@ -161,9 +160,9 @@ describe('generateFile — modality presets', () => {
     expect(natural.Modality).toBe('NM')
   })
 
-  it('modality applies to large-image', async () => {
+  it('modality applies to valid-image', async () => {
     const { buffer } = await generateFile({
-      type: 'large-image',
+      type: 'valid-image',
       modality: 'MR',
       rows: 16,
       columns: 16,
@@ -216,13 +215,13 @@ describe('generateFile — tag overrides', () => {
   })
 })
 
-describe('generateFile — large-image', () => {
+describe('generateFile — pixel dimensions', () => {
   it('produces a buffer larger than rows × columns × frames × 2 bytes', async () => {
     const rows = 64
     const columns = 64
     const frames = 4
     const { buffer } = await generateFile({
-      type: 'large-image',
+      type: 'valid-image',
       rows,
       columns,
       frames,
@@ -232,22 +231,105 @@ describe('generateFile — large-image', () => {
 
   it('defaults to 1 frame when frames is omitted', async () => {
     const { buffer } = await generateFile({
-      type: 'large-image',
+      type: 'valid-image',
       rows: 16,
       columns: 16,
     })
     expect(buffer.length).toBeGreaterThan(16 * 16 * 2)
+    // Single-frame files omit NumberOfFrames entirely.
+    expect(Object.hasOwn(parseNatural(buffer), 'NumberOfFrames')).toBe(false)
   })
 
   it('tag overrides win over spec dimensions for non-pixel fields', async () => {
     const { buffer } = await generateFile({
-      type: 'large-image',
+      type: 'valid-image',
       rows: 32,
       columns: 32,
       tags: { StudyDescription: 'Override wins' },
     })
     const natural = parseNatural(buffer)
     expect(natural.StudyDescription).toBe('Override wins')
+  })
+})
+
+describe('generateFile — targetSizeKb', () => {
+  const tolerance = (targetBytes: number) => Math.max(4096, targetBytes * 0.02)
+
+  for (const targetKb of [100, 5 * 1024, 100 * 1024]) {
+    it(`lands within tolerance at ${targetKb} KB`, async () => {
+      const { buffer } = await generateFile({
+        type: 'valid-image',
+        targetSizeKb: targetKb,
+      })
+      const targetBytes = targetKb * 1024
+      expect(Math.abs(buffer.length - targetBytes)).toBeLessThanOrEqual(
+        tolerance(targetBytes),
+      )
+    })
+  }
+
+  it('accounts for tag-override overhead', async () => {
+    const { buffer } = await generateFile({
+      type: 'valid-image',
+      targetSizeKb: 100,
+      tags: { StudyDescription: 'x'.repeat(64), PatientID: 'P'.repeat(30) },
+    })
+    expect(Math.abs(buffer.length - 100 * 1024)).toBeLessThanOrEqual(4096)
+  })
+
+  it('works on invalid-uid-image and vendor-warnings-image', async () => {
+    for (const type of [
+      'invalid-uid-image',
+      'vendor-warnings-image',
+    ] as const) {
+      const { buffer } = await generateFile({ type, targetSizeKb: 100 })
+      expect(Math.abs(buffer.length - 100 * 1024)).toBeLessThanOrEqual(4096)
+    }
+  })
+
+  it('keeps Rows x Columns consistent with the padded PixelData', async () => {
+    const { buffer } = await generateFile({
+      type: 'valid-image',
+      targetSizeKb: 100,
+    })
+    const natural = parseNatural(buffer)
+    const rows = natural.Rows as number
+    const columns = natural.Columns as number
+    expect(rows * columns * 2).toBeGreaterThan(90 * 1024)
+  })
+
+  it('a target below the file overhead produces the minimal possible file', async () => {
+    // ~2 KB of tag data pushes the overhead above the 1 KB target.
+    const tags = {
+      StudyDescription: 'x'.repeat(64),
+      PatientComments: 'y'.repeat(2048),
+    }
+    const { buffer } = await generateFile({
+      type: 'valid-image',
+      targetSizeKb: 1,
+      tags,
+    })
+    const overheadOnly = (await generateFile({ type: 'valid-image', tags }))
+      .buffer
+    // Floors at ~overhead (above target) rather than failing.
+    expect(buffer.length).toBeGreaterThan(1024)
+    expect(buffer.length).toBeLessThanOrEqual(overheadOnly.length + 16)
+  })
+
+  it('is deterministic with a seed', async () => {
+    const a = (
+      await generateFile(
+        { type: 'valid-image', targetSizeKb: 100 },
+        { seed: 3, index: 0 },
+      )
+    ).buffer
+    const b = (
+      await generateFile(
+        { type: 'valid-image', targetSizeKb: 100 },
+        { seed: 3, index: 0 },
+      )
+    ).buffer
+    expect(Buffer.compare(a, b)).toBe(0)
   })
 })
 
@@ -328,9 +410,9 @@ describe('generateFile — transferSyntax on non-valid-image types', () => {
     assertImplicitVr(buffer)
   })
 
-  it('large-image respects implicit-vr-little-endian', async () => {
+  it('valid-image respects implicit-vr-little-endian', async () => {
     const { buffer } = await generateFile({
-      type: 'large-image',
+      type: 'valid-image',
       rows: 16,
       columns: 16,
       transferSyntax: 'implicit-vr-little-endian',

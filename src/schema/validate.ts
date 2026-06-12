@@ -10,13 +10,11 @@ import type {
   ViolationClass,
 } from './types.js'
 
-// "image" marks the image-generating types — they accept modality, tags,
-// violations, and transferSyntax, and can be grouped into series.
+// Image-generating types: accept the image-only fields and can be grouped into series.
 const TYPE_CAPABILITIES = {
   'valid-image': { image: true },
   'invalid-uid-image': { image: true },
   'vendor-warnings-image': { image: true },
-  'large-image': { image: true },
   'fake-signature': { image: false },
   'non-dicom': { image: false },
   dicomdir: { image: false },
@@ -39,7 +37,7 @@ const VALID_TRANSFER_SYNTAXES = {
   'implicit-vr-little-endian': true,
 } as const satisfies Record<TransferSyntax, true>
 
-// 512 MB — prevents accidental OOM from unreasonably large large-image specs.
+// 512 MB — prevents accidental OOM from unreasonably large pixel sizing.
 const MAX_PIXEL_BYTES = 512 * 1024 * 1024
 
 // satisfies ensures this stays in sync with the ViolationClass union — a missing
@@ -93,6 +91,10 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
 
   for (const field of [
     'modality',
+    'rows',
+    'columns',
+    'frames',
+    'targetSizeKb',
     'tags',
     'violations',
     'transferSyntax',
@@ -135,7 +137,21 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
     }
   }
 
-  if (type === 'large-image') {
+  const hasDims = 'rows' in e || 'columns' in e || 'frames' in e
+  if ('targetSizeKb' in e) {
+    if (hasDims) {
+      throw new Error(
+        `${path}: targetSizeKb cannot be combined with rows/columns/frames — use one sizing mechanism`,
+      )
+    }
+    validatePositiveInt(e.targetSizeKb, `${path}.targetSizeKb`)
+    if ((e.targetSizeKb as number) * 1024 > MAX_PIXEL_BYTES) {
+      throw new Error(`${path}.targetSizeKb: exceeds the 512 MB limit`)
+    }
+  } else if (hasDims) {
+    if (!('rows' in e) || !('columns' in e)) {
+      throw new Error(`${path}: rows and columns must be provided together`)
+    }
     validatePositiveInt(e.rows, `${path}.rows`)
     validatePositiveInt(e.columns, `${path}.columns`)
     if ('frames' in e) validatePositiveInt(e.frames, `${path}.frames`)
