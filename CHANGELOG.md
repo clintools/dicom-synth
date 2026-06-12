@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/clintools/dicom-synth/compare/v1.2.0...v1.3.0) (2026-06-12)
+
+
+### Features
+
+* add modality presets and rename image spec types from *-ct to *-image ([053fde0](https://github.com/clintools/dicom-synth/commit/053fde045cdaf36c1e7548051853bd08f0540720))
+
 # [1.2.0](https://github.com/clintools/dicom-synth/compare/v1.1.0...v1.2.0) (2026-06-12)
 
 
