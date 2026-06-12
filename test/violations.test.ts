@@ -3,9 +3,9 @@ import { generateFile } from '../src/collection/writer'
 import type { ViolationClass } from '../src/schema/types'
 import { applyViolations } from '../src/syntheticFixtures/violations'
 
-// Generate a base valid-ct buffer to use as the input for violation tests.
+// Generate a base valid-image buffer to use as the input for violation tests.
 async function baseBuffer() {
-  return (await generateFile({ type: 'valid-ct' })).buffer
+  return (await generateFile({ type: 'valid-image' })).buffer
 }
 
 describe('violations — smoke', () => {
@@ -16,9 +16,9 @@ describe('violations — smoke', () => {
     'missing-type1-tag',
   ] as const satisfies ViolationClass[])('%s alters the buffer', async (violation) => {
     const opts = { seed: 42 }
-    const { buffer: clean } = await generateFile({ type: 'valid-ct' }, opts)
+    const { buffer: clean } = await generateFile({ type: 'valid-image' }, opts)
     const { buffer: violated } = await generateFile(
-      { type: 'valid-ct', violations: [violation] },
+      { type: 'valid-image', violations: [violation] },
       opts,
     )
     expect(Buffer.compare(clean, violated)).not.toBe(0)
@@ -28,7 +28,7 @@ describe('violations — smoke', () => {
 describe('violations — uid-too-long', () => {
   it('still has a DICM signature', async () => {
     const { buffer } = await generateFile({
-      type: 'valid-ct',
+      type: 'valid-image',
       violations: ['uid-too-long'],
     })
     expect(buffer.subarray(128, 132).toString('ascii')).toBe('DICM')
@@ -36,7 +36,7 @@ describe('violations — uid-too-long', () => {
 
   it('writes a 65-char SOPInstanceUID — not truncated to the legal 64', async () => {
     const { buffer } = await generateFile({
-      type: 'valid-ct',
+      type: 'valid-image',
       violations: ['uid-too-long'],
     })
     // dcmjs denaturalizeDataset truncates UI values to 64 chars; a truncated
@@ -48,7 +48,7 @@ describe('violations — uid-too-long', () => {
 describe('violations — non-conformant-uid', () => {
   it('injects a UID with a leading-zero component (not alphabetic chars)', async () => {
     const { buffer } = await generateFile({
-      type: 'valid-ct',
+      type: 'valid-image',
       violations: ['non-conformant-uid'],
     })
     // '2.25.01.' is present: the '01' component has a leading zero
@@ -65,7 +65,7 @@ describe('violations — missing-meta-header', () => {
 
   it('does not start with DICM', async () => {
     const { buffer } = await generateFile({
-      type: 'valid-ct',
+      type: 'valid-image',
       violations: ['missing-meta-header'],
     })
     expect(buffer.subarray(0, 4).toString('ascii')).not.toBe('DICM')
@@ -83,7 +83,7 @@ describe('violations — malformed-sq-delimiter', () => {
 describe('violations — combinations', () => {
   it('applies tag-level violations before byte-level (missing-meta-header last)', async () => {
     const { buffer } = await generateFile({
-      type: 'valid-ct',
+      type: 'valid-image',
       violations: ['uid-too-long', 'missing-meta-header'],
     })
     // After stripping preamble, buffer should not start with DICM

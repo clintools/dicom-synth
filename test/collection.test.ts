@@ -23,33 +23,37 @@ async function collect(spec: DatasetSpec): Promise<GeneratedFile[]> {
 
 describe('generateFile — layer 1', () => {
   it('returns index 0 when no opts supplied', async () => {
-    const { index } = await generateFile({ type: 'valid-ct' })
+    const { index } = await generateFile({ type: 'valid-image' })
     expect(index).toBe(0)
   })
 
   it('honours explicit index', async () => {
-    const { index } = await generateFile({ type: 'valid-ct' }, { index: 7 })
+    const { index } = await generateFile({ type: 'valid-image' }, { index: 7 })
     expect(index).toBe(7)
   })
 
   it('same seed + index → identical buffers across calls', async () => {
-    const a = (await generateFile({ type: 'valid-ct' }, { seed: 1, index: 0 }))
-      .buffer
-    const b = (await generateFile({ type: 'valid-ct' }, { seed: 1, index: 0 }))
-      .buffer
+    const a = (
+      await generateFile({ type: 'valid-image' }, { seed: 1, index: 0 })
+    ).buffer
+    const b = (
+      await generateFile({ type: 'valid-image' }, { seed: 1, index: 0 })
+    ).buffer
     expect(Buffer.compare(a, b)).toBe(0)
   })
 
   it('different seeds → different buffers', async () => {
-    const a = (await generateFile({ type: 'valid-ct' }, { seed: 1, index: 0 }))
-      .buffer
-    const b = (await generateFile({ type: 'valid-ct' }, { seed: 2, index: 0 }))
-      .buffer
+    const a = (
+      await generateFile({ type: 'valid-image' }, { seed: 1, index: 0 })
+    ).buffer
+    const b = (
+      await generateFile({ type: 'valid-image' }, { seed: 2, index: 0 })
+    ).buffer
     expect(Buffer.compare(a, b)).not.toBe(0)
   })
 
   it('applies violations when spec includes them', async () => {
-    const clean = (await generateFile({ type: 'valid-ct' })).buffer
+    const clean = (await generateFile({ type: 'valid-image' })).buffer
     const violated = applyViolations(clean, ['missing-meta-header'])
     expect(violated.length).toBe(clean.length - 132)
   })
@@ -60,7 +64,7 @@ describe('generateCollectionFromSpec — layer 2', () => {
     const files: unknown[] = []
     for await (const f of generateCollectionFromSpec({
       entries: [
-        { type: 'valid-ct', count: 3 },
+        { type: 'valid-image', count: 3 },
         { type: 'fake-signature', count: 2 },
       ],
     })) {
@@ -72,7 +76,7 @@ describe('generateCollectionFromSpec — layer 2', () => {
   it('yields unique filenames across the collection', async () => {
     const names: string[] = []
     for await (const f of generateCollectionFromSpec({
-      entries: [{ type: 'valid-ct', count: 5 }],
+      entries: [{ type: 'valid-image', count: 5 }],
     })) {
       names.push(f.filename)
     }
@@ -82,7 +86,7 @@ describe('generateCollectionFromSpec — layer 2', () => {
   it('yields unique buffers for unseeded collections', async () => {
     const buffers: Buffer[] = []
     for await (const f of generateCollectionFromSpec({
-      entries: [{ type: 'valid-ct', count: 3 }],
+      entries: [{ type: 'valid-image', count: 3 }],
     })) {
       buffers.push(f.buffer)
     }
@@ -95,7 +99,7 @@ describe('generateCollectionFromSpec — layer 2', () => {
     const collect = async () => {
       const bufs: Buffer[] = []
       for await (const f of generateCollectionFromSpec({
-        entries: [{ type: 'valid-ct', count: 3 }],
+        entries: [{ type: 'valid-image', count: 3 }],
         seed: 99,
       })) {
         bufs.push(f.buffer)
@@ -112,7 +116,7 @@ describe('generateCollectionFromSpec — layer 2', () => {
   it('handles entries without explicit count (defaults to 1)', async () => {
     const files: unknown[] = []
     for await (const f of generateCollectionFromSpec({
-      entries: [{ type: 'valid-ct' }, { type: 'fake-signature' }],
+      entries: [{ type: 'valid-image' }, { type: 'fake-signature' }],
     })) {
       files.push(f)
     }
@@ -122,19 +126,19 @@ describe('generateCollectionFromSpec — layer 2', () => {
   it('zero-pads index width to match total file count', async () => {
     const names: string[] = []
     for await (const f of generateCollectionFromSpec({
-      entries: [{ type: 'valid-ct', count: 10 }],
+      entries: [{ type: 'valid-image', count: 10 }],
     })) {
       names.push(f.filename)
     }
     // 10 files → padWidth 2 → "00" through "09"
-    expect(names[0]).toBe('valid-ct-00.dcm')
-    expect(names[9]).toBe('valid-ct-09.dcm')
+    expect(names[0]).toBe('valid-image-00.dcm')
+    expect(names[9]).toBe('valid-image-09.dcm')
   })
 
   it('applies violations to entries that include them', async () => {
     const files: Array<{ buffer: Buffer }> = []
     for await (const f of generateCollectionFromSpec({
-      entries: [{ type: 'valid-ct', violations: ['missing-meta-header'] }],
+      entries: [{ type: 'valid-image', violations: ['missing-meta-header'] }],
     })) {
       files.push(f)
     }
@@ -148,11 +152,11 @@ describe('generateCollectionFromSpec — study/series grouping', () => {
     studies: [
       {
         series: [
-          { entries: [{ type: 'valid-ct', count: 3 }] },
-          { entries: [{ type: 'valid-ct', count: 2 }] },
+          { entries: [{ type: 'valid-image', count: 3 }] },
+          { entries: [{ type: 'valid-image', count: 2 }] },
         ],
       },
-      { series: [{ entries: [{ type: 'valid-ct' }] }] },
+      { series: [{ entries: [{ type: 'valid-image' }] }] },
     ],
     seed: 42,
   }
@@ -206,8 +210,8 @@ describe('generateCollectionFromSpec — study/series grouping', () => {
       studies: [
         {
           series: [
-            { entries: [{ type: 'valid-ct', count: 2 }] },
-            { entries: [{ type: 'valid-ct', count: 2 }] },
+            { entries: [{ type: 'valid-image', count: 2 }] },
+            { entries: [{ type: 'valid-image', count: 2 }] },
           ],
         },
       ],
@@ -228,7 +232,7 @@ describe('generateCollectionFromSpec — study/series grouping', () => {
           series: [
             {
               entries: [
-                { type: 'valid-ct', tags: { StudyInstanceUID: '2.25.777' } },
+                { type: 'valid-image', tags: { StudyInstanceUID: '2.25.777' } },
               ],
             },
           ],
@@ -241,7 +245,7 @@ describe('generateCollectionFromSpec — study/series grouping', () => {
 
   it('study count expands to copies with distinct study UIDs', async () => {
     const files = await collect({
-      studies: [{ series: [{ entries: [{ type: 'valid-ct' }] }], count: 3 }],
+      studies: [{ series: [{ entries: [{ type: 'valid-image' }] }], count: 3 }],
       seed: 5,
     })
     expect(files).toHaveLength(3)
@@ -259,7 +263,9 @@ describe('generateCollectionFromSpec — study/series grouping', () => {
           series: [
             {
               tags: { SeriesDescription: 'From series' },
-              entries: [{ type: 'valid-ct', tags: { PatientID: 'ENTRY_PID' } }],
+              entries: [
+                { type: 'valid-image', tags: { PatientID: 'ENTRY_PID' } },
+              ],
             },
           ],
         },
@@ -272,10 +278,26 @@ describe('generateCollectionFromSpec — study/series grouping', () => {
     expect(natural.SeriesDescription).toBe('From series')
   })
 
-  it('invalid-uid-ct entries in a series share a non-conformant StudyInstanceUID', async () => {
+  it('modality applies to every file in a grouped series', async () => {
     const files = await collect({
       studies: [
-        { series: [{ entries: [{ type: 'invalid-uid-ct', count: 2 }] }] },
+        {
+          series: [
+            { entries: [{ type: 'valid-image', modality: 'PT', count: 2 }] },
+          ],
+        },
+      ],
+      seed: 11,
+    })
+    const naturals = files.map((f) => parseNatural(f.buffer))
+    expect(naturals.map((n) => n.Modality)).toEqual(['PT', 'PT'])
+    expect(naturals[0].SeriesInstanceUID).toBe(naturals[1].SeriesInstanceUID)
+  })
+
+  it('invalid-uid-image entries in a series share a non-conformant StudyInstanceUID', async () => {
+    const files = await collect({
+      studies: [
+        { series: [{ entries: [{ type: 'invalid-uid-image', count: 2 }] }] },
       ],
       seed: 7,
     })
@@ -297,12 +319,12 @@ describe('generateCollectionFromSpec — study/series grouping', () => {
 
   it('mixed entries and studies count toward one pad width', async () => {
     const files = await collect({
-      entries: [{ type: 'valid-ct', count: 6 }],
-      studies: [{ series: [{ entries: [{ type: 'valid-ct', count: 6 }] }] }],
+      entries: [{ type: 'valid-image', count: 6 }],
+      studies: [{ series: [{ entries: [{ type: 'valid-image', count: 6 }] }] }],
     })
     expect(files).toHaveLength(12)
     // 12 files → padWidth 2
-    expect(files[0].filename).toBe('valid-ct-00.dcm')
+    expect(files[0].filename).toBe('valid-image-00.dcm')
   })
 })
 
@@ -311,8 +333,8 @@ describe('generateCollectionFromSpec — layout', () => {
     studies: [
       {
         series: [
-          { entries: [{ type: 'valid-ct', count: 2 }] },
-          { entries: [{ type: 'valid-ct' }] },
+          { entries: [{ type: 'valid-image', count: 2 }] },
+          { entries: [{ type: 'valid-image' }] },
         ],
       },
     ],
@@ -339,7 +361,7 @@ describe('generateCollectionFromSpec — layout', () => {
 
   it('flat entries keep relativePath equal to filename under hierarchical layout', async () => {
     const files = await collect({
-      entries: [{ type: 'valid-ct' }],
+      entries: [{ type: 'valid-image' }],
       layout: 'hierarchical',
     })
     expect(files[0].relativePath).toBe(files[0].filename)
@@ -361,7 +383,7 @@ describe('writeCollectionFromSpec — layer 3', () => {
     await writeCollectionFromSpec(
       {
         entries: [
-          { type: 'valid-ct', count: 2 },
+          { type: 'valid-image', count: 2 },
           { type: 'fake-signature', count: 1 },
         ],
       },
@@ -374,20 +396,23 @@ describe('writeCollectionFromSpec — layer 3', () => {
     const manifest = await writeCollectionFromSpec(
       {
         entries: [
-          { type: 'valid-ct', count: 2 },
+          { type: 'valid-image', count: 2 },
           { type: 'non-dicom', count: 1 },
         ],
       },
       tmpDir,
     )
     expect(manifest).toHaveLength(3)
-    expect(manifest[0].type).toBe('valid-ct')
+    expect(manifest[0].type).toBe('valid-image')
     expect(manifest[2].type).toBe('non-dicom')
   })
 
   it('creates the output directory if it does not exist', async () => {
     const nested = join(tmpDir, 'nested', 'out')
-    await writeCollectionFromSpec({ entries: [{ type: 'valid-ct' }] }, nested)
+    await writeCollectionFromSpec(
+      { entries: [{ type: 'valid-image' }] },
+      nested,
+    )
     expect(readdirSync(nested)).toHaveLength(1)
   })
 
@@ -398,7 +423,10 @@ describe('writeCollectionFromSpec — layer 3', () => {
   })
 
   it('writes DICOM files with .dcm extension', async () => {
-    await writeCollectionFromSpec({ entries: [{ type: 'valid-ct' }] }, tmpDir)
+    await writeCollectionFromSpec(
+      { entries: [{ type: 'valid-image' }] },
+      tmpDir,
+    )
     const [name] = readdirSync(tmpDir)
     expect(name).toMatch(/\.dcm$/)
   })
@@ -409,8 +437,8 @@ describe('writeCollectionFromSpec — layer 3', () => {
         studies: [
           {
             series: [
-              { entries: [{ type: 'valid-ct', count: 2 }] },
-              { entries: [{ type: 'valid-ct' }] },
+              { entries: [{ type: 'valid-image', count: 2 }] },
+              { entries: [{ type: 'valid-image' }] },
             ],
           },
         ],
