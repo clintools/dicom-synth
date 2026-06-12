@@ -163,10 +163,14 @@ for await (const file of generateCollectionFromSpec({ entries: [{ type: 'valid-i
 import type { DatasetSpec } from 'dicom-synth'
 
 type DatasetSpec = {
-  entries: EntrySpec[]   // one or more entry specs; must not be empty
-  seed?: number          // optional: fixed seed for deterministic UID generation
+  entries?: EntrySpec[]              // flat entries — each file gets its own UIDs
+  studies?: StudySpec[]              // grouped entries — shared study/series UIDs
+  seed?: number                      // optional: fixed seed for deterministic UID generation
+  layout?: 'flat' | 'hierarchical'   // optional: directory layout for grouped files
 }
 ```
+
+At least one of `entries` or `studies` must be present and non-empty; both may be used together.
 
 `seed` makes UID generation fully deterministic across runs. Omit it for random UIDs.
 
@@ -184,10 +188,10 @@ An `EntrySpec` is a `FileSpec` plus an optional `count` field (how many times to
 
 | Type | Description | Conformance |
 |---|---|---|
-| `valid-image` | Standards-valid CT image; numeric UIDs, complete meta header | strict |
-| `invalid-uid-image` | CT with non-numeric UIDs (letters in UID components) | edge |
-| `vendor-warnings-image` | CT with empty `Laterality` and `PatientWeight = 0` — produces dciodvfy warnings | edge |
-| `large-image` | CT with configurable pixel dimensions; `rows` and `columns` required | strict |
+| `valid-image` | Standards-valid image (CT by default — see `modality`); numeric UIDs, complete meta header | strict |
+| `invalid-uid-image` | Image with non-numeric UIDs (letters in UID components) | edge |
+| `vendor-warnings-image` | Image with empty `Laterality` and `PatientWeight = 0` — produces dciodvfy warnings | edge |
+| `large-image` | Image with configurable pixel dimensions; `rows` and `columns` required | strict |
 | `fake-signature` | 200-byte buffer with `XXXX` at preamble offset — no DICM magic | edge |
 | `non-dicom` | Arbitrary text buffer; no extension in filename | edge |
 | `dicomdir` | Minimal DICOMDIR file | strict |
@@ -198,7 +202,7 @@ An `EntrySpec` is a `FileSpec` plus an optional `count` field (how many times to
 { "type": "large-image", "rows": 512, "columns": 512, "frames": 100 }
 ```
 
-`frames` defaults to 1. A 512×512×100 CT produces a buffer of ~52 MB.
+`frames` defaults to 1. A 512×512×100 image produces a buffer of ~52 MB.
 
 **`non-dicom` fields:**
 
@@ -207,6 +211,68 @@ An `EntrySpec` is a `FileSpec` plus an optional `count` field (how many times to
 ```
 
 `content` defaults to `"not dicom"`.
+
+### Modality presets (`modality`)
+
+Available on `valid-image`, `invalid-uid-image`, `vendor-warnings-image`, and `large-image`. Defaults to `CT`.
+
+```json
+{ "type": "valid-image", "modality": "PT" }
+```
+
+Each preset sets the matching SOP Class UID (dataset and meta header), the `Modality` tag, and minimal modality-specific type-1 attributes:
+
+| Modality | SOP Class | Extra attributes |
+|---|---|---|
+| `CT` (default) | CT Image Storage `…1.1.2` | — |
+| `PT` | PET Image Storage `…1.1.128` | `Units`, `DecayCorrection`, `CorrectedImage` |
+| `MR` | MR Image Storage `…1.1.4` | `ScanningSequence`, `SequenceVariant` |
+| `CR` | CR Image Storage `…1.1.1` | — |
+
+Presets target shape/variance fidelity for pipeline testing, not clinical fidelity. Tag overrides win over preset attributes.
+
+```ts
+import type { Modality } from 'dicom-synth'
+```
+
+### Study/series grouping (`studies`)
+
+Group files so they share `StudyInstanceUID` (per study) and `SeriesInstanceUID` (per series). `InstanceNumber` increments from 1 within each series. SOP Instance UIDs remain unique per file.
+
+```json
+{
+  "studies": [
+    {
+      "tags": { "PatientID": "P001" },
+      "series": [
+        { "entries": [{ "type": "valid-image", "modality": "CT", "count": 50 }] },
+        { "entries": [{ "type": "valid-image", "modality": "PT", "count": 120 }] }
+      ]
+    },
+    { "series": [{ "entries": [{ "type": "valid-image" }] }], "count": 3 }
+  ],
+  "seed": 42,
+  "layout": "hierarchical"
+}
+```
+
+- `StudySpec.count` generates N copies of the whole study, each with fresh UIDs.
+- `tags` may be set at study, series, and entry level — merged into each file, with entry tags winning over series tags, which win over study tags.
+- Only image-generating types can appear in a series (`fake-signature`, `non-dicom`, and `dicomdir` are rejected).
+- With a `seed`, group UIDs are deterministic; without one they are random but still shared within each group.
+
+```ts
+import type { StudySpec, SeriesSpec, SeriesEntrySpec } from 'dicom-synth'
+```
+
+### Layout (`layout`)
+
+| Value | Effect |
+|---|---|
+| `flat` (default) | All files in the output root, named `<type>-<index>[.dcm]` |
+| `hierarchical` | Grouped files written as `study-001/series-001/00001.dcm`; flat `entries` stay in the root |
+
+`GeneratedFile.relativePath` carries the layout-aware path for in-process consumers; `filename` is always the basename.
 
 ### Tag overrides (`tags`)
 
@@ -286,7 +352,16 @@ The validator throws with a human-readable message on any structural error.
     { "type": "non-dicom",          "count": 2, "content": "garbage" },
     { "type": "dicomdir",           "count": 1 }
   ],
-  "seed": 42
+  "studies": [
+    {
+      "series": [
+        { "entries": [{ "type": "valid-image", "modality": "CT", "count": 50 }] },
+        { "entries": [{ "type": "valid-image", "modality": "PT", "count": 120 }] }
+      ]
+    }
+  ],
+  "seed": 42,
+  "layout": "hierarchical"
 }
 ```
 
@@ -417,9 +492,10 @@ Git hooks: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Future development
 
-- **Multi-series study layouts** — shared `StudyInstanceUID` across files via a `studies` top-level key; no breaking schema change needed
+- **Size targeting** — generate a file of approximately N KB via a `targetSizeKb` field
+- **Parametric dataset designer** — range-based spec (`{min, max}` for counts/sizes) that resolves deterministically into a concrete `DatasetSpec`
+- **Dry-run mode** — emit the manifest (paths, types, grouping) without writing files
 - **Compressed transfer syntaxes** — JPEG-LS, JPEG 2000, RLE
-- **Modality presets** — MR, PET, CR profiles beyond CT
 - **Private fixture catalogues** — same SHA-256 fetch/cache pattern for credentials-backed sources (e.g. S3)
 
 ---
