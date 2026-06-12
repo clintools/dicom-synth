@@ -3,24 +3,31 @@ import type {
   DatasetSpec,
   EntrySpec,
   FileSpec,
+  Modality,
   SeriesSpec,
   StudySpec,
   TransferSyntax,
   ViolationClass,
 } from './types.js'
 
+// "image" marks the image-generating types — they accept modality, tags,
+// violations, and transferSyntax, and can be grouped into series.
 const TYPE_CAPABILITIES = {
-  'valid-ct': { tags: true, violations: true, transferSyntax: true },
-  'invalid-uid-ct': { tags: true, violations: true, transferSyntax: true },
-  'vendor-warnings-ct': { tags: true, violations: true, transferSyntax: true },
-  'large-ct': { tags: true, violations: true, transferSyntax: true },
-  'fake-signature': { tags: false, violations: false, transferSyntax: false },
-  'non-dicom': { tags: false, violations: false, transferSyntax: false },
-  dicomdir: { tags: false, violations: false, transferSyntax: false },
-} as const satisfies Record<
-  FileSpec['type'],
-  { tags: boolean; violations: boolean; transferSyntax: boolean }
->
+  'valid-image': { image: true },
+  'invalid-uid-image': { image: true },
+  'vendor-warnings-image': { image: true },
+  'large-image': { image: true },
+  'fake-signature': { image: false },
+  'non-dicom': { image: false },
+  dicomdir: { image: false },
+} as const satisfies Record<FileSpec['type'], { image: boolean }>
+
+const VALID_MODALITIES = {
+  CT: true,
+  PT: true,
+  MR: true,
+  CR: true,
+} as const satisfies Record<Modality, true>
 
 const VALID_LAYOUTS = {
   flat: true,
@@ -32,7 +39,7 @@ const VALID_TRANSFER_SYNTAXES = {
   'implicit-vr-little-endian': true,
 } as const satisfies Record<TransferSyntax, true>
 
-// 512 MB — prevents accidental OOM from unreasonably large large-ct specs.
+// 512 MB — prevents accidental OOM from unreasonably large large-image specs.
 const MAX_PIXEL_BYTES = 512 * 1024 * 1024
 
 // satisfies ensures this stays in sync with the ViolationClass union — a missing
@@ -84,12 +91,17 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
 
   if ('count' in e) validatePositiveInt(e.count, `${path}.count`)
 
+  for (const field of [
+    'modality',
+    'tags',
+    'violations',
+    'transferSyntax',
+  ] as const) {
+    if (!caps.image && field in e)
+      throw new Error(`${path}.${field}: not supported for type "${type}"`)
+  }
+
   if ('transferSyntax' in e) {
-    if (!caps.transferSyntax) {
-      throw new Error(
-        `${path}.transferSyntax: not supported for type "${type}"`,
-      )
-    }
     if (!Object.hasOwn(VALID_TRANSFER_SYNTAXES, e.transferSyntax as string)) {
       throw new Error(
         `${path}.transferSyntax: must be one of ${Object.keys(VALID_TRANSFER_SYNTAXES).join(', ')}`,
@@ -97,10 +109,16 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
     }
   }
 
-  if (!caps.tags && 'tags' in e)
-    throw new Error(`${path}.tags: not supported for type "${type}"`)
-  if (!caps.violations && 'violations' in e)
-    throw new Error(`${path}.violations: not supported for type "${type}"`)
+  if ('modality' in e) {
+    if (
+      typeof e.modality !== 'string' ||
+      !Object.hasOwn(VALID_MODALITIES, e.modality)
+    ) {
+      throw new Error(
+        `${path}.modality: must be one of ${Object.keys(VALID_MODALITIES).join(', ')}; got ${JSON.stringify(e.modality)}`,
+      )
+    }
+  }
 
   if ('tags' in e) validateTags(e.tags, `${path}.tags`)
 
@@ -117,7 +135,7 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
     }
   }
 
-  if (type === 'large-ct') {
+  if (type === 'large-image') {
     validatePositiveInt(e.rows, `${path}.rows`)
     validatePositiveInt(e.columns, `${path}.columns`)
     if ('frames' in e) validatePositiveInt(e.frames, `${path}.frames`)
@@ -157,9 +175,9 @@ function validateSeries(series: unknown, path: string): SeriesSpec {
   for (let i = 0; i < s.entries.length; i++) {
     const e = validateEntry(s.entries[i], `${path}.entries[${i}]`)
     // Only image-generating types can be grouped (mirrors SeriesEntrySpec).
-    if (!TYPE_CAPABILITIES[e.type].tags) {
+    if (!TYPE_CAPABILITIES[e.type].image) {
       throw new Error(
-        `${path}.entries[${i}].type: "${e.type}" cannot be used inside a series — only types that support tags can be grouped`,
+        `${path}.entries[${i}].type: "${e.type}" cannot be used inside a series — only image-generating types can be grouped`,
       )
     }
   }

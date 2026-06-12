@@ -4,12 +4,42 @@ import { buildDicomdirBuffer } from '../nonStandardDicom/dicomdir.js'
 import type {
   DicomTagOverrides,
   FileSpec,
+  Modality,
   TransferSyntax,
 } from '../schema/types.js'
 import { HEX_TAG_RE } from '../schema/validate.js'
 import type { UidSet } from './uid.js'
 
-const CT_SOP_CLASS = '1.2.840.10008.5.1.4.1.1.2'
+// SOP Class UID plus the minimal modality-specific type-1 attributes needed
+// for shape/variance fidelity (not clinical fidelity).
+const MODALITY_PRESETS: Record<
+  Modality,
+  { sopClassUid: string; attributes: Record<string, unknown> }
+> = {
+  CT: {
+    sopClassUid: '1.2.840.10008.5.1.4.1.1.2', // CT Image Storage
+    attributes: {},
+  },
+  PT: {
+    sopClassUid: '1.2.840.10008.5.1.4.1.1.128', // PET Image Storage
+    attributes: {
+      Units: 'BQML',
+      DecayCorrection: 'NONE',
+      CorrectedImage: ['ATTN', 'DECY'],
+    },
+  },
+  MR: {
+    sopClassUid: '1.2.840.10008.5.1.4.1.1.4', // MR Image Storage
+    attributes: {
+      ScanningSequence: 'SE',
+      SequenceVariant: 'NONE',
+    },
+  },
+  CR: {
+    sopClassUid: '1.2.840.10008.5.1.4.1.1.1', // CR Image Storage
+    attributes: {},
+  },
+}
 
 const TRANSFER_SYNTAX_UID: Record<TransferSyntax, string> = {
   'explicit-vr-little-endian': '1.2.840.10008.1.2.1',
@@ -60,11 +90,12 @@ function applyTagOverrides(
 
 function buildMeta(
   uid: UidSet,
+  modality: Modality,
   transferSyntax: TransferSyntax = 'explicit-vr-little-endian',
 ): Record<string, unknown> {
   return {
     FileMetaInformationVersion: new Uint8Array([0, 1]).buffer,
-    MediaStorageSOPClassUID: CT_SOP_CLASS,
+    MediaStorageSOPClassUID: MODALITY_PRESETS[modality].sopClassUid,
     MediaStorageSOPInstanceUID: uid.sop,
     TransferSyntaxUID: TRANSFER_SYNTAX_UID[transferSyntax],
     ImplementationClassUID: '1.2.3.4',
@@ -72,12 +103,16 @@ function buildMeta(
   }
 }
 
-function buildBaseCtDataset(uid: UidSet): Record<string, unknown> {
+function buildBaseImageDataset(
+  uid: UidSet,
+  modality: Modality,
+): Record<string, unknown> {
+  const preset = MODALITY_PRESETS[modality]
   return {
     PatientName: 'SYNTH^SUBJECT',
     PatientID: 'SYNTH_PID',
-    Modality: 'CT',
-    SOPClassUID: CT_SOP_CLASS,
+    Modality: modality,
+    SOPClassUID: preset.sopClassUid,
     SOPInstanceUID: uid.sop,
     SeriesInstanceUID: uid.series,
     StudyInstanceUID: uid.study,
@@ -95,6 +130,7 @@ function buildBaseCtDataset(uid: UidSet): Record<string, unknown> {
     // Declares PixelData's VR explicitly — without it dcmjs logs
     // "No value representation given for PixelData" and falls back to OW anyway.
     _vrMap: { PixelData: 'OW' },
+    ...preset.attributes,
   }
 }
 
@@ -113,18 +149,20 @@ function serializeDict(
   return Buffer.from(dicomDict.write({ allowInvalidVRLength: true }))
 }
 
-function buildValidCtBuffer(
+function buildValidImageBuffer(
   uid: UidSet,
+  modality: Modality,
   tags?: DicomTagOverrides,
   transferSyntax?: TransferSyntax,
 ): Buffer {
-  const dataset = buildBaseCtDataset(uid)
+  const dataset = buildBaseImageDataset(uid, modality)
   applyTagOverrides(dataset, tags)
-  return serializeDict(buildMeta(uid, transferSyntax), dataset)
+  return serializeDict(buildMeta(uid, modality, transferSyntax), dataset)
 }
 
-function buildInvalidUidCtBuffer(
+function buildInvalidUidImageBuffer(
   uid: UidSet,
+  modality: Modality,
   tags?: DicomTagOverrides,
   transferSyntax?: TransferSyntax,
 ): Buffer {
@@ -134,40 +172,42 @@ function buildInvalidUidCtBuffer(
     series: `2.25.invalid.series.${uid.series.slice(-6)}`,
     sop: `2.25.invalid.sop.${uid.sop.slice(-6)}`,
   }
-  const dataset = buildBaseCtDataset(invalidUid)
+  const dataset = buildBaseImageDataset(invalidUid, modality)
   applyTagOverrides(dataset, tags)
-  return serializeDict(buildMeta(invalidUid, transferSyntax), dataset)
+  return serializeDict(buildMeta(invalidUid, modality, transferSyntax), dataset)
 }
 
-function buildVendorCtBuffer(
+function buildVendorWarningsImageBuffer(
   uid: UidSet,
+  modality: Modality,
   tags?: DicomTagOverrides,
   transferSyntax?: TransferSyntax,
 ): Buffer {
   // Vendor defaults set first so that user tag overrides can win.
-  const dataset = buildBaseCtDataset(uid)
+  const dataset = buildBaseImageDataset(uid, modality)
   dataset.Laterality = ''
   dataset.PatientWeight = '0'
   applyTagOverrides(dataset, tags)
-  return serializeDict(buildMeta(uid, transferSyntax), dataset)
+  return serializeDict(buildMeta(uid, modality, transferSyntax), dataset)
 }
 
-function buildLargeCtBuffer(
+function buildLargeImageBuffer(
   uid: UidSet,
+  modality: Modality,
   rows: number,
   columns: number,
   frames: number,
   tags?: DicomTagOverrides,
   transferSyntax?: TransferSyntax,
 ): Buffer {
-  const dataset = buildBaseCtDataset(uid)
+  const dataset = buildBaseImageDataset(uid, modality)
   dataset.Rows = rows
   dataset.Columns = columns
   dataset.NumberOfFrames = frames
   // 16-bit signed, 2 bytes per pixel
   dataset.PixelData = new Uint8Array(rows * columns * frames * 2).buffer
   applyTagOverrides(dataset, tags)
-  return serializeDict(buildMeta(uid, transferSyntax), dataset)
+  return serializeDict(buildMeta(uid, modality, transferSyntax), dataset)
 }
 
 function buildFakeSignatureBuffer(): Buffer {
@@ -182,15 +222,31 @@ function buildNonDicomBuffer(content = 'not dicom'): Buffer {
 
 export function buildBufferForSpec(spec: FileSpec, uid: UidSet): Buffer {
   switch (spec.type) {
-    case 'valid-ct':
-      return buildValidCtBuffer(uid, spec.tags, spec.transferSyntax)
-    case 'invalid-uid-ct':
-      return buildInvalidUidCtBuffer(uid, spec.tags, spec.transferSyntax)
-    case 'vendor-warnings-ct':
-      return buildVendorCtBuffer(uid, spec.tags, spec.transferSyntax)
-    case 'large-ct':
-      return buildLargeCtBuffer(
+    case 'valid-image':
+      return buildValidImageBuffer(
         uid,
+        spec.modality ?? 'CT',
+        spec.tags,
+        spec.transferSyntax,
+      )
+    case 'invalid-uid-image':
+      return buildInvalidUidImageBuffer(
+        uid,
+        spec.modality ?? 'CT',
+        spec.tags,
+        spec.transferSyntax,
+      )
+    case 'vendor-warnings-image':
+      return buildVendorWarningsImageBuffer(
+        uid,
+        spec.modality ?? 'CT',
+        spec.tags,
+        spec.transferSyntax,
+      )
+    case 'large-image':
+      return buildLargeImageBuffer(
+        uid,
+        spec.modality ?? 'CT',
         spec.rows,
         spec.columns,
         spec.frames ?? 1,
