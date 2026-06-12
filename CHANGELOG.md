@@ -1,3 +1,10 @@
+# [1.4.0](https://github.com/clintools/dicom-synth/compare/v1.3.0...v1.4.0) (2026-06-12)
+
+
+### Features
+
+* add targetSizeKb size targeting and fold large-image into base image sizing ([ab0bd38](https://github.com/clintools/dicom-synth/commit/ab0bd3815dbaaf7ff99ea1ba1ec08ad07c361523))
+
 # [1.3.0](https://github.com/clintools/dicom-synth/compare/v1.2.0...v1.3.0) (2026-06-12)
 
 
