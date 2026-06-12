@@ -13,7 +13,7 @@ describe('validateDatasetSpec — valid inputs', () => {
       { type: 'valid-image' },
       { type: 'invalid-uid-image' },
       { type: 'vendor-warnings-image' },
-      { type: 'large-image', rows: 64, columns: 64 },
+      { type: 'valid-image', rows: 64, columns: 64 },
       { type: 'fake-signature' },
       { type: 'non-dicom' },
       { type: 'dicomdir' },
@@ -63,6 +63,18 @@ describe('validateDatasetSpec — valid inputs', () => {
         entries: [{ type: 'valid-image', tags: { '00081030': 'Protocol A' } }],
       }),
     ).not.toThrow()
+  })
+
+  it('accepts targetSizeKb on image types', () => {
+    for (const type of [
+      'valid-image',
+      'invalid-uid-image',
+      'vendor-warnings-image',
+    ]) {
+      expect(() =>
+        validateDatasetSpec({ entries: [{ type, targetSizeKb: 100 }] }),
+      ).not.toThrow()
+    }
   })
 
   it('accepts all modality presets', () => {
@@ -153,16 +165,16 @@ describe('validateDatasetSpec — invalid inputs', () => {
     ).toThrow(/violations/)
   })
 
-  it('rejects large-image missing required rows', () => {
+  it('rejects columns without rows', () => {
     expect(() =>
-      validateDatasetSpec({ entries: [{ type: 'large-image', columns: 64 }] }),
-    ).toThrow(/rows/)
+      validateDatasetSpec({ entries: [{ type: 'valid-image', columns: 64 }] }),
+    ).toThrow(/rows and columns must be provided together/)
   })
 
-  it('rejects large-image with rows: 0', () => {
+  it('rejects valid-image with rows: 0', () => {
     expect(() =>
       validateDatasetSpec({
-        entries: [{ type: 'large-image', rows: 0, columns: 64 }],
+        entries: [{ type: 'valid-image', rows: 0, columns: 64 }],
       }),
     ).toThrow(/rows/)
   })
@@ -176,16 +188,56 @@ describe('validateDatasetSpec — invalid inputs', () => {
     ).toThrow(/seed/)
   })
 
-  it('rejects large-image missing columns', () => {
+  it('rejects rows without columns', () => {
     expect(() =>
-      validateDatasetSpec({ entries: [{ type: 'large-image', rows: 64 }] }),
-    ).toThrow(/columns/)
+      validateDatasetSpec({ entries: [{ type: 'valid-image', rows: 64 }] }),
+    ).toThrow(/rows and columns must be provided together/)
   })
 
-  it('rejects large-image with frames: 0', () => {
+  it('rejects frames without rows and columns', () => {
+    expect(() =>
+      validateDatasetSpec({ entries: [{ type: 'valid-image', frames: 10 }] }),
+    ).toThrow(/rows and columns must be provided together/)
+  })
+
+  it('rejects targetSizeKb combined with dimensions', () => {
     expect(() =>
       validateDatasetSpec({
-        entries: [{ type: 'large-image', rows: 64, columns: 64, frames: 0 }],
+        entries: [
+          { type: 'valid-image', targetSizeKb: 100, rows: 64, columns: 64 },
+        ],
+      }),
+    ).toThrow(/one sizing mechanism/)
+  })
+
+  it('rejects non-positive targetSizeKb', () => {
+    expect(() =>
+      validateDatasetSpec({
+        entries: [{ type: 'valid-image', targetSizeKb: 0 }],
+      }),
+    ).toThrow(/targetSizeKb/)
+  })
+
+  it('rejects targetSizeKb above the 512 MB limit', () => {
+    expect(() =>
+      validateDatasetSpec({
+        entries: [{ type: 'valid-image', targetSizeKb: 512 * 1024 + 1 }],
+      }),
+    ).toThrow(/512 MB/)
+  })
+
+  it('rejects targetSizeKb on non-image types', () => {
+    expect(() =>
+      validateDatasetSpec({
+        entries: [{ type: 'non-dicom', targetSizeKb: 100 }],
+      }),
+    ).toThrow(/targetSizeKb: not supported/)
+  })
+
+  it('rejects valid-image with frames: 0', () => {
+    expect(() =>
+      validateDatasetSpec({
+        entries: [{ type: 'valid-image', rows: 64, columns: 64, frames: 0 }],
       }),
     ).toThrow(/frames/)
   })
@@ -297,10 +349,10 @@ describe('validateDatasetSpec — invalid inputs', () => {
     ).toThrow(/modality: not supported/)
   })
 
-  it('rejects large-image where pixel data exceeds the 512 MB limit', () => {
+  it('rejects valid-image where pixel data exceeds the 512 MB limit', () => {
     expect(() =>
       validateDatasetSpec({
-        entries: [{ type: 'large-image', rows: 65535, columns: 65535 }],
+        entries: [{ type: 'valid-image', rows: 65535, columns: 65535 }],
       }),
     ).toThrow(/512 MB/)
   })
