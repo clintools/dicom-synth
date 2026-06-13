@@ -22,6 +22,7 @@ export {
   fetchPublicCaseToCache,
   verifySha256,
 } from './public-fixtures/fetch.js'
+export { resolveParametricSpec } from './schema/parametric.js'
 export type {
   DatasetLayout,
   DatasetSpec,
@@ -33,6 +34,10 @@ export type {
   InvalidUidImageSpec,
   Modality,
   NonDicomSpec,
+  ParametricEdgeCase,
+  ParametricSpec,
+  ParametricStudies,
+  Range,
   SeriesEntrySpec,
   SeriesSpec,
   StudySpec,
@@ -42,4 +47,7 @@ export type {
   ViolationClass,
 } from './schema/types.js'
 // Schema validation
-export { validateDatasetSpec } from './schema/validate.js'
+export {
+  validateDatasetSpec,
+  validateParametricSpec,
+} from './schema/validate.js'
