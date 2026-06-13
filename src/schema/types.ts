@@ -89,3 +89,28 @@ export type DatasetSpec = {
   seed?: number
   layout?: DatasetLayout
 }
+
+// A fixed value or an inclusive {min, max} sampled at resolution time.
+export type Range = number | { min: number; max: number }
+
+export type ParametricStudies = {
+  count: Range
+  seriesPerStudy: Range
+  filesPerSeries: Range
+  fileSizeKb?: Range // per-file targetSizeKb; sampled per file when a range
+  modalities?: Modality[] // one drawn per series; defaults to CT
+  tags?: DicomTagOverrides
+}
+
+// frequency: per-file probability (0–1) drawn across the whole dataset, so the
+// resolved spec records the actual count. Omit it to append the entry as-is.
+export type ParametricEdgeCase = EntrySpec & { frequency?: number }
+
+// Range-based dataset designer — resolveParametricSpec turns this into a
+// concrete, re-runnable DatasetSpec.
+export type ParametricSpec = {
+  seed?: number
+  studies: ParametricStudies
+  edgeCases?: ParametricEdgeCase[]
+  layout?: DatasetLayout
+}

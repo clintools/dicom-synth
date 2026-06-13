@@ -1,15 +1,18 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
+  generateCollectionFromSpec,
+  resolveParametricSpec,
   validateDatasetSpec,
   writeCollectionFromSpec,
 } from '../dist/esm/index.js'
 
 function usage() {
   console.error(
-    'Usage: dicom-synth-generate --schema <path> [--out <dir>]\n' +
-      '       dicom-synth-generate --schema-inline <json> [--out <dir>]',
+    'Usage: dicom-synth-generate --schema <path> [--out <dir>] [--dry-run]\n' +
+      '       dicom-synth-generate --schema-inline <json> [--out <dir>] [--dry-run]\n' +
+      '       dicom-synth-generate --parametric <path> [--out <dir>] [--emit-spec <path>] [--dry-run]',
   )
   process.exit(1)
 }
@@ -19,36 +22,50 @@ const args = process.argv.slice(2)
 if (args.length === 0) usage()
 
 let rawSpec
+let specSource
 let outDir = resolve('./fixtures/generated')
+let emitSpecPath
+let dryRun = false
+
+function readSpecArg(flag, value) {
+  if (rawSpec !== undefined) {
+    console.error(
+      'Error: --schema, --schema-inline and --parametric are mutually exclusive',
+    )
+    process.exit(1)
+  }
+  specSource = flag
+  if (flag === '--schema-inline') {
+    try {
+      rawSpec = JSON.parse(value)
+    } catch (err) {
+      console.error(`Error parsing inline schema: ${err.message}`)
+      process.exit(1)
+    }
+  } else {
+    try {
+      rawSpec = JSON.parse(readFileSync(resolve(value), 'utf8'))
+    } catch (err) {
+      console.error(`Error reading ${flag.slice(2)} file: ${err.message}`)
+      process.exit(1)
+    }
+  }
+}
 
 for (let i = 0; i < args.length; i++) {
   if (
-    (args[i] === '--schema' || args[i] === '--schema-inline') &&
+    (args[i] === '--schema' ||
+      args[i] === '--schema-inline' ||
+      args[i] === '--parametric') &&
     args[i + 1]
   ) {
-    if (rawSpec !== undefined) {
-      console.error(
-        'Error: --schema and --schema-inline are mutually exclusive',
-      )
-      process.exit(1)
-    }
-    if (args[i] === '--schema') {
-      try {
-        rawSpec = JSON.parse(readFileSync(resolve(args[++i]), 'utf8'))
-      } catch (err) {
-        console.error(`Error reading schema file: ${err.message}`)
-        process.exit(1)
-      }
-    } else {
-      try {
-        rawSpec = JSON.parse(args[++i])
-      } catch (err) {
-        console.error(`Error parsing inline schema: ${err.message}`)
-        process.exit(1)
-      }
-    }
+    readSpecArg(args[i], args[++i])
   } else if (args[i] === '--out' && args[i + 1]) {
     outDir = resolve(args[++i])
+  } else if (args[i] === '--emit-spec' && args[i + 1]) {
+    emitSpecPath = resolve(args[++i])
+  } else if (args[i] === '--dry-run') {
+    dryRun = true
   } else {
     console.error(`Unknown argument: ${args[i]}`)
     usage()
@@ -57,29 +74,72 @@ for (let i = 0; i < args.length; i++) {
 
 if (rawSpec === undefined) usage()
 
+function printTypeCounts(counts) {
+  for (const [type, count] of Object.entries(counts)) {
+    console.log(`  ${type}: ${count}`)
+  }
+}
+
+if (emitSpecPath !== undefined && specSource !== '--parametric') {
+  console.error('Error: --emit-spec requires --parametric')
+  process.exit(1)
+}
+
 let spec
 try {
-  spec = validateDatasetSpec(rawSpec)
+  spec =
+    specSource === '--parametric'
+      ? resolveParametricSpec(rawSpec)
+      : validateDatasetSpec(rawSpec)
 } catch (err) {
   console.error(`Schema validation error: ${err.message}`)
   process.exit(1)
 }
 
-let manifest
-try {
-  manifest = await writeCollectionFromSpec(spec, outDir)
-} catch (err) {
-  console.error(`Error writing collection: ${err.message}`)
-  process.exit(1)
+if (emitSpecPath !== undefined) {
+  try {
+    writeFileSync(emitSpecPath, `${JSON.stringify(spec, null, 2)}\n`)
+    console.log(`Wrote resolved spec to ${emitSpecPath}`)
+  } catch (err) {
+    console.error(`Error writing resolved spec: ${err.message}`)
+    process.exit(1)
+  }
 }
 
-// Summary by type
-const counts = {}
-for (const entry of manifest) {
-  counts[entry.type] = (counts[entry.type] ?? 0) + 1
-}
+if (dryRun) {
+  const counts = {}
+  let fileCount = 0
+  let byteCount = 0
+  try {
+    for await (const file of generateCollectionFromSpec(spec)) {
+      console.log(
+        `${file.relativePath}  (${file.type}, ${(file.buffer.length / 1024).toFixed(1)} KB)`,
+      )
+      counts[file.type] = (counts[file.type] ?? 0) + 1
+      fileCount++
+      byteCount += file.buffer.length
+    }
+  } catch (err) {
+    console.error(`Error generating collection: ${err.message}`)
+    process.exit(1)
+  }
+  console.log(
+    `Dry run: ${fileCount} file(s), ${(byteCount / 1024).toFixed(1)} KB total — nothing written`,
+  )
+  printTypeCounts(counts)
+} else {
+  let manifest
+  try {
+    manifest = await writeCollectionFromSpec(spec, outDir)
+  } catch (err) {
+    console.error(`Error writing collection: ${err.message}`)
+    process.exit(1)
+  }
 
-console.log(`Wrote ${manifest.length} file(s) to ${outDir}`)
-for (const [type, count] of Object.entries(counts)) {
-  console.log(`  ${type}: ${count}`)
+  const counts = {}
+  for (const entry of manifest) {
+    counts[entry.type] = (counts[entry.type] ?? 0) + 1
+  }
+  console.log(`Wrote ${manifest.length} file(s) to ${outDir}`)
+  printTypeCounts(counts)
 }

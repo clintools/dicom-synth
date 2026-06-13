@@ -4,6 +4,10 @@ import type {
   EntrySpec,
   FileSpec,
   Modality,
+  ParametricEdgeCase,
+  ParametricSpec,
+  ParametricStudies,
+  Range,
   SeriesSpec,
   StudySpec,
   TransferSyntax,
@@ -63,6 +67,34 @@ function validatePositiveInt(value: unknown, path: string): void {
   }
 }
 
+function validateSeed(value: unknown, path: string): void {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(
+      `${path}: must be a finite number; got ${JSON.stringify(value)}`,
+    )
+  }
+}
+
+function validateSizeKbLimit(kb: number, path: string): void {
+  if (kb * 1024 > MAX_PIXEL_BYTES) {
+    throw new Error(`${path}: exceeds the 512 MB limit`)
+  }
+}
+
+// Validates that `value` is a key of one of the VALID_* lookup tables, throwing
+// with the permitted values listed otherwise.
+function validateEnum(
+  value: unknown,
+  valid: Record<string, unknown>,
+  path: string,
+): void {
+  if (typeof value !== 'string' || !Object.hasOwn(valid, value)) {
+    throw new Error(
+      `${path}: must be one of ${Object.keys(valid).join(', ')}; got ${JSON.stringify(value)}`,
+    )
+  }
+}
+
 function validateTagKey(key: string, path: string): void {
   if (!HEX_TAG_RE.test(key) && !KEYWORD_RE.test(key)) {
     throw new Error(
@@ -78,11 +110,7 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
 
   const e = entry as Record<string, unknown>
 
-  if (typeof e.type !== 'string' || !Object.hasOwn(TYPE_CAPABILITIES, e.type)) {
-    throw new Error(
-      `${path}.type: must be one of ${Object.keys(TYPE_CAPABILITIES).join(', ')}; got ${JSON.stringify(e.type)}`,
-    )
-  }
+  validateEnum(e.type, TYPE_CAPABILITIES, `${path}.type`)
 
   const type = e.type as FileSpec['type']
   const caps = TYPE_CAPABILITIES[type]
@@ -104,22 +132,15 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
   }
 
   if ('transferSyntax' in e) {
-    if (!Object.hasOwn(VALID_TRANSFER_SYNTAXES, e.transferSyntax as string)) {
-      throw new Error(
-        `${path}.transferSyntax: must be one of ${Object.keys(VALID_TRANSFER_SYNTAXES).join(', ')}`,
-      )
-    }
+    validateEnum(
+      e.transferSyntax,
+      VALID_TRANSFER_SYNTAXES,
+      `${path}.transferSyntax`,
+    )
   }
 
   if ('modality' in e) {
-    if (
-      typeof e.modality !== 'string' ||
-      !Object.hasOwn(VALID_MODALITIES, e.modality)
-    ) {
-      throw new Error(
-        `${path}.modality: must be one of ${Object.keys(VALID_MODALITIES).join(', ')}; got ${JSON.stringify(e.modality)}`,
-      )
-    }
+    validateEnum(e.modality, VALID_MODALITIES, `${path}.modality`)
   }
 
   if ('tags' in e) validateTags(e.tags, `${path}.tags`)
@@ -129,11 +150,7 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
       throw new Error(`${path}.violations: must be an array`)
     }
     for (const [i, v] of (e.violations as unknown[]).entries()) {
-      if (typeof v !== 'string' || !Object.hasOwn(VALID_VIOLATIONS, v)) {
-        throw new Error(
-          `${path}.violations[${i}]: must be one of ${Object.keys(VALID_VIOLATIONS).join(', ')}; got ${JSON.stringify(v)}`,
-        )
-      }
+      validateEnum(v, VALID_VIOLATIONS, `${path}.violations[${i}]`)
     }
   }
 
@@ -145,9 +162,7 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
       )
     }
     validatePositiveInt(e.targetSizeKb, `${path}.targetSizeKb`)
-    if ((e.targetSizeKb as number) * 1024 > MAX_PIXEL_BYTES) {
-      throw new Error(`${path}.targetSizeKb: exceeds the 512 MB limit`)
-    }
+    validateSizeKbLimit(e.targetSizeKb as number, `${path}.targetSizeKb`)
   } else if (hasDims) {
     if (!('rows' in e) || !('columns' in e)) {
       throw new Error(`${path}: rows and columns must be provided together`)
@@ -254,28 +269,131 @@ export function validateDatasetSpec(raw: unknown): DatasetSpec {
     validateStudy(study, `studies[${i}]`),
   )
 
-  if ('seed' in r) {
-    if (typeof r.seed !== 'number' || !Number.isFinite(r.seed)) {
-      throw new Error(
-        `DatasetSpec.seed: must be a finite number; got ${JSON.stringify(r.seed)}`,
-      )
-    }
-  }
+  if ('seed' in r) validateSeed(r.seed, 'DatasetSpec.seed')
 
   if ('layout' in r) {
-    if (
-      typeof r.layout !== 'string' ||
-      !Object.hasOwn(VALID_LAYOUTS, r.layout)
-    ) {
-      throw new Error(
-        `DatasetSpec.layout: must be one of ${Object.keys(VALID_LAYOUTS).join(', ')}; got ${JSON.stringify(r.layout)}`,
-      )
-    }
+    validateEnum(r.layout, VALID_LAYOUTS, 'DatasetSpec.layout')
   }
 
   return {
     ...(entries.length > 0 ? { entries } : {}),
     ...(studies.length > 0 ? { studies } : {}),
+    ...(r.seed !== undefined ? { seed: r.seed as number } : {}),
+    ...(r.layout !== undefined ? { layout: r.layout as DatasetLayout } : {}),
+  }
+}
+
+function validateRange(value: unknown, path: string): Range {
+  if (typeof value === 'number') {
+    validatePositiveInt(value, path)
+    return value
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(
+      `${path}: must be a positive integer or { min, max }; got ${JSON.stringify(value)}`,
+    )
+  }
+  const r = value as Record<string, unknown>
+  validatePositiveInt(r.min, `${path}.min`)
+  validatePositiveInt(r.max, `${path}.max`)
+  if ((r.min as number) > (r.max as number)) {
+    throw new Error(`${path}: min (${r.min}) must be ≤ max (${r.max})`)
+  }
+  return value as Range
+}
+
+function rangeMax(range: Range): number {
+  return typeof range === 'number' ? range : range.max
+}
+
+function validateParametricStudies(
+  studies: unknown,
+  path: string,
+): ParametricStudies {
+  if (
+    typeof studies !== 'object' ||
+    studies === null ||
+    Array.isArray(studies)
+  ) {
+    throw new Error(`${path}: must be an object`)
+  }
+  const s = studies as Record<string, unknown>
+
+  for (const field of ['count', 'seriesPerStudy', 'filesPerSeries'] as const) {
+    if (!(field in s)) throw new Error(`${path}.${field}: is required`)
+    validateRange(s[field], `${path}.${field}`)
+  }
+
+  if ('fileSizeKb' in s) {
+    validateRange(s.fileSizeKb, `${path}.fileSizeKb`)
+    validateSizeKbLimit(rangeMax(s.fileSizeKb as Range), `${path}.fileSizeKb`)
+  }
+
+  if ('modalities' in s) {
+    if (!Array.isArray(s.modalities) || s.modalities.length === 0) {
+      throw new Error(`${path}.modalities: must be a non-empty array`)
+    }
+    for (const [i, m] of (s.modalities as unknown[]).entries()) {
+      validateEnum(m, VALID_MODALITIES, `${path}.modalities[${i}]`)
+    }
+  }
+
+  if ('tags' in s) validateTags(s.tags, `${path}.tags`)
+
+  return s as unknown as ParametricStudies
+}
+
+function validateEdgeCase(edgeCase: unknown, path: string): ParametricEdgeCase {
+  const e = validateEntry(edgeCase, path) as Record<string, unknown>
+
+  if ('frequency' in e) {
+    if ('count' in e) {
+      throw new Error(
+        `${path}: frequency cannot be combined with count — frequency draws the count at resolution time`,
+      )
+    }
+    const f = e.frequency
+    if (typeof f !== 'number' || !(f >= 0 && f <= 1)) {
+      throw new Error(
+        `${path}.frequency: must be a number between 0 and 1; got ${JSON.stringify(f)}`,
+      )
+    }
+  }
+
+  return e as unknown as ParametricEdgeCase
+}
+
+export function validateParametricSpec(raw: unknown): ParametricSpec {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new Error('ParametricSpec: must be a JSON object')
+  }
+
+  const r = raw as Record<string, unknown>
+
+  if (!('studies' in r)) {
+    throw new Error('ParametricSpec.studies: is required')
+  }
+  const studies = validateParametricStudies(r.studies, 'studies')
+
+  const edgeCases: ParametricEdgeCase[] = []
+  if ('edgeCases' in r) {
+    if (!Array.isArray(r.edgeCases)) {
+      throw new Error('ParametricSpec.edgeCases: must be an array')
+    }
+    for (const [i, e] of (r.edgeCases as unknown[]).entries()) {
+      edgeCases.push(validateEdgeCase(e, `edgeCases[${i}]`))
+    }
+  }
+
+  if ('seed' in r) validateSeed(r.seed, 'ParametricSpec.seed')
+
+  if ('layout' in r) {
+    validateEnum(r.layout, VALID_LAYOUTS, 'ParametricSpec.layout')
+  }
+
+  return {
+    studies,
+    ...(edgeCases.length > 0 ? { edgeCases } : {}),
     ...(r.seed !== undefined ? { seed: r.seed as number } : {}),
     ...(r.layout !== undefined ? { layout: r.layout as DatasetLayout } : {}),
   }

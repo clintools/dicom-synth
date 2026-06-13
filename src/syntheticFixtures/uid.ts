@@ -29,13 +29,14 @@ function seededUid(next: () => number, role: UidRole): string {
   return formatUid(next(), next(), role)
 }
 
-// Offsets the group UID streams away from the per-file streams so a grouped
-// study/series UID cannot collide with a flat file's UID at the same index.
+// Offsets each seeded stream into its own domain so independent consumers of
+// the same dataset seed cannot draw colliding sequences.
 const GROUP_STREAM_OFFSET = 0x9e3779b9
+export const PARAMETRIC_STREAM_OFFSET = 0x85ebca6b
 
-// All seeded UID streams derive their LCG seed here; the offset separates
-// stream domains and the prime multipliers separate indices within a domain.
-function seededStream(
+// All seeded streams derive their LCG seed here; the offset separates stream
+// domains and the prime multipliers separate indices within a domain.
+export function seededStream(
   seed: number,
   offset: number,
   a: number,

@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -10,6 +10,13 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const hasBuild = existsSync(join(repoRoot, 'dist/esm/index.js'))
 const bin = join(repoRoot, 'bin/dicom-synth-generate.mjs')
 const defaultSchema = join(repoRoot, 'examples/default.json')
+const parametricSchema = join(repoRoot, 'examples/parametric.json')
+
+function walkFiles(dir: string): string[] {
+  return readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((d) => d.isFile())
+    .map((d) => relative(dir, join(d.parentPath, d.name)))
+}
 
 function run(
   args: string[],
@@ -96,6 +103,77 @@ describe('dicom-synth-generate CLI', () => {
       expect(code).toBe(0)
       expect(readdirSync(tmpDir)).toHaveLength(5)
       expect(stdout).toMatch(/5 file/)
+    },
+  )
+
+  it.skipIf(!hasBuild)(
+    'generates from a parametric spec and emits the resolved spec',
+    async () => {
+      const outDir = join(tmpDir, 'out')
+      const specPath = join(tmpDir, 'resolved.json')
+      const { code, stdout } = await run([
+        '--parametric',
+        parametricSchema,
+        '--out',
+        outDir,
+        '--emit-spec',
+        specPath,
+      ])
+      expect(code).toBe(0)
+      expect(stdout).toMatch(/Wrote resolved spec/)
+
+      const resolved = JSON.parse(readFileSync(specPath, 'utf8'))
+      expect(resolved.seed).toBe(42)
+      expect(Array.isArray(resolved.studies)).toBe(true)
+
+      // The resolved spec regenerates the same file set via --schema.
+      const rerunDir = join(tmpDir, 'rerun')
+      const rerun = await run(['--schema', specPath, '--out', rerunDir])
+      expect(rerun.code).toBe(0)
+      expect(walkFiles(rerunDir).sort()).toEqual(walkFiles(outDir).sort())
+    },
+  )
+
+  it.skipIf(!hasBuild)(
+    'dry run reports the manifest without writing',
+    async () => {
+      const outDir = join(tmpDir, 'out')
+      const { code, stdout } = await run([
+        '--parametric',
+        parametricSchema,
+        '--out',
+        outDir,
+        '--dry-run',
+      ])
+      expect(code).toBe(0)
+      expect(stdout).toMatch(/Dry run: \d+ file\(s\)/)
+      expect(stdout).toMatch(/nothing written/)
+      expect(existsSync(outDir)).toBe(false)
+    },
+  )
+
+  it.skipIf(!hasBuild)('rejects --emit-spec without --parametric', async () => {
+    const { code, stderr } = await run([
+      '--schema',
+      defaultSchema,
+      '--emit-spec',
+      join(tmpDir, 'spec.json'),
+    ])
+    expect(code).not.toBe(0)
+    expect(stderr).toMatch(/--emit-spec requires --parametric/)
+  })
+
+  it.skipIf(!hasBuild)(
+    'rejects --schema combined with --parametric',
+    async () => {
+      const { code, stderr } = await run([
+        '--schema',
+        defaultSchema,
+        '--parametric',
+        parametricSchema,
+      ])
+      expect(code).not.toBe(0)
+      expect(stderr).toMatch(/mutually exclusive/)
     },
   )
 
