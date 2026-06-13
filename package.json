@@ -1,6 +1,6 @@
 {
   "name": "dicom-synth",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Toolkit for synthetic DICOM fixtures and public fixture fetch/cache.",
   "license": "Apache-2.0",
   "type": "module",

@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/clintools/dicom-synth/compare/v1.4.0...v1.5.0) (2026-06-13)
+
+
+### Features
+
+* add ParametricSpec, resolver, and CLI flags ([4f1e1e5](https://github.com/clintools/dicom-synth/commit/4f1e1e50646904360f2d37f349f65fd46b1d2943))
+
 # [1.4.0](https://github.com/clintools/dicom-synth/compare/v1.3.0...v1.4.0) (2026-06-12)
 
 
