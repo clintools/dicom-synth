@@ -63,6 +63,20 @@ function validatePositiveInt(value: unknown, path: string): void {
   }
 }
 
+// Validates that `value` is a key of one of the VALID_* lookup tables, throwing
+// with the permitted values listed otherwise.
+function validateEnum(
+  value: unknown,
+  valid: Record<string, unknown>,
+  path: string,
+): void {
+  if (typeof value !== 'string' || !Object.hasOwn(valid, value)) {
+    throw new Error(
+      `${path}: must be one of ${Object.keys(valid).join(', ')}; got ${JSON.stringify(value)}`,
+    )
+  }
+}
+
 function validateTagKey(key: string, path: string): void {
   if (!HEX_TAG_RE.test(key) && !KEYWORD_RE.test(key)) {
     throw new Error(
@@ -78,11 +92,7 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
 
   const e = entry as Record<string, unknown>
 
-  if (typeof e.type !== 'string' || !Object.hasOwn(TYPE_CAPABILITIES, e.type)) {
-    throw new Error(
-      `${path}.type: must be one of ${Object.keys(TYPE_CAPABILITIES).join(', ')}; got ${JSON.stringify(e.type)}`,
-    )
-  }
+  validateEnum(e.type, TYPE_CAPABILITIES, `${path}.type`)
 
   const type = e.type as FileSpec['type']
   const caps = TYPE_CAPABILITIES[type]
@@ -104,22 +114,15 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
   }
 
   if ('transferSyntax' in e) {
-    if (!Object.hasOwn(VALID_TRANSFER_SYNTAXES, e.transferSyntax as string)) {
-      throw new Error(
-        `${path}.transferSyntax: must be one of ${Object.keys(VALID_TRANSFER_SYNTAXES).join(', ')}`,
-      )
-    }
+    validateEnum(
+      e.transferSyntax,
+      VALID_TRANSFER_SYNTAXES,
+      `${path}.transferSyntax`,
+    )
   }
 
   if ('modality' in e) {
-    if (
-      typeof e.modality !== 'string' ||
-      !Object.hasOwn(VALID_MODALITIES, e.modality)
-    ) {
-      throw new Error(
-        `${path}.modality: must be one of ${Object.keys(VALID_MODALITIES).join(', ')}; got ${JSON.stringify(e.modality)}`,
-      )
-    }
+    validateEnum(e.modality, VALID_MODALITIES, `${path}.modality`)
   }
 
   if ('tags' in e) validateTags(e.tags, `${path}.tags`)
@@ -129,11 +132,7 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
       throw new Error(`${path}.violations: must be an array`)
     }
     for (const [i, v] of (e.violations as unknown[]).entries()) {
-      if (typeof v !== 'string' || !Object.hasOwn(VALID_VIOLATIONS, v)) {
-        throw new Error(
-          `${path}.violations[${i}]: must be one of ${Object.keys(VALID_VIOLATIONS).join(', ')}; got ${JSON.stringify(v)}`,
-        )
-      }
+      validateEnum(v, VALID_VIOLATIONS, `${path}.violations[${i}]`)
     }
   }
 
@@ -263,14 +262,7 @@ export function validateDatasetSpec(raw: unknown): DatasetSpec {
   }
 
   if ('layout' in r) {
-    if (
-      typeof r.layout !== 'string' ||
-      !Object.hasOwn(VALID_LAYOUTS, r.layout)
-    ) {
-      throw new Error(
-        `DatasetSpec.layout: must be one of ${Object.keys(VALID_LAYOUTS).join(', ')}; got ${JSON.stringify(r.layout)}`,
-      )
-    }
+    validateEnum(r.layout, VALID_LAYOUTS, 'DatasetSpec.layout')
   }
 
   return {
