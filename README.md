@@ -417,6 +417,35 @@ See `examples/parametric.json` for a JSON example and `examples/convert-data-sha
 
 ---
 
+## Describe tool
+
+`describeDirectory` scans an existing DICOM tree and emits a concrete `DatasetSpec` reproducing its shape — studies/series grouped by their UIDs, per-file size as `targetSizeKb`, and modality. This closes the loop: real tree → spec → regenerate.
+
+```ts
+import { describeDirectory, writeCollectionFromSpec } from 'dicom-synth'
+
+const { spec, stats } = describeDirectory('./real-dataset')
+// stats: { dicomFiles, skipped, unknownModality }
+await writeCollectionFromSpec(spec, './reproduced')
+```
+
+- **Shape only by default** — no tags are copied; the regenerated dataset carries fresh UIDs and synthetic identifiers, so it cannot leak PHI from the source.
+- **Opt-in tag preservation** — `keepTags` copies the named tags verbatim (some datasets are valuable for testing *precisely because* of their problematic tags):
+
+  ```ts
+  describeDirectory('./real-dataset', { keepTags: ['Manufacturer', '00080060'] })
+  ```
+
+  ⚠️ Tags are copied exactly as found. If a kept tag contains PHI, handling that PHI is the **caller's responsibility** — the tool extracts only what you name.
+- Files in a series collapse into one counted entry only when modality, size, and kept tags all match, so tag/size variation is preserved rather than flattened.
+- Non-DICOM, unparseable, or ungroupable files (missing study/series UIDs) are skipped and counted. An unsupported `Modality` is emitted as the default (CT) and counted.
+
+```ts
+import type { DescribeOptions, DescribeResult } from 'dicom-synth'
+```
+
+---
+
 ## CLI
 
 ```bash
@@ -454,6 +483,24 @@ dicom-synth-generate --schema examples/default.json --out /tmp/out
 ```
 
 Schema validation errors exit with code 1 and a descriptive message.
+
+### Describe an existing tree
+
+```bash
+# Shape only (PHI-safe) — prints the DatasetSpec to stdout
+dicom-synth-describe ./real-dataset
+
+# Save to a file, and keep selected tags (caller owns any PHI in them)
+dicom-synth-describe ./real-dataset --out spec.json --keep-tags Manufacturer,00080060
+```
+
+| Flag | Effect |
+|---|---|
+| `<dir>` | DICOM tree to scan (required) |
+| `--out <path>` | Write the `DatasetSpec` JSON (default: stdout) |
+| `--keep-tags <a,b,...>` | Copy the named tags (keywords or 8-hex) verbatim; omit for shape only |
+
+Scan stats (DICOM/skipped/unsupported-modality counts) are written to stderr.
 
 ---
 
@@ -522,6 +569,7 @@ pnpm fetch:public-case -- pydicom-CT-small
 | `src/schema/types.ts` | All public TypeScript types (`FileSpec`, `DatasetSpec`, `ViolationClass`, etc.) |
 | `src/schema/validate.ts` | `validateDatasetSpec` / `validateParametricSpec` — validate raw JSON values against the schema |
 | `src/schema/parametric.ts` | `resolveParametricSpec` — seeded `ParametricSpec` → `DatasetSpec` resolution |
+| `src/describe/describe.ts` | `describeDirectory` — scan a DICOM tree → `DatasetSpec` |
 | `src/syntheticFixtures/generator.ts` | Internal buffer builders keyed on `FileSpec` type |
 | `src/syntheticFixtures/uid.ts` | Seeded and random UID generation |
 | `src/syntheticFixtures/violations.ts` | Post-processing violation injection |
@@ -530,6 +578,7 @@ pnpm fetch:public-case -- pydicom-CT-small
 | `src/public-fixtures/fetch.ts` | Fetch, SHA-256 verify, content-addressed cache |
 | `bin/dicom-synth-generate.mjs` | Published generate CLI (requires `pnpm build`) |
 | `bin/dicom-synth-fetch.mjs` | Published fetch CLI (requires `pnpm build`) |
+| `bin/dicom-synth-describe.mjs` | Published describe CLI (requires `pnpm build`) |
 | `examples/default.json` | Default `DatasetSpec` — one each of `valid-image`, `invalid-uid-image`, `vendor-warnings-image` |
 | `examples/parametric.json` | Example `ParametricSpec` for the `--parametric` CLI path |
 | `examples/convert-data-shape.mjs` | Example converter: tree-shape JSON → `DatasetSpec` |
@@ -558,8 +607,8 @@ Git hooks: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Future development
 
-- **Describe tool** — scan an existing DICOM tree and emit a matching `DatasetSpec` (counts, grouping, sizes, modalities; no PHI)
 - **Dimension edge-case recipes** — documented presets for geometry pathologies (1×65535 strips, high frame counts)
+- **Per-file tag variance templating** — patterned overrides like `"PatientID": "P{index}"` for shape replication
 - **Compressed transfer syntaxes** — JPEG-LS, JPEG 2000, RLE
 - **Private fixture catalogues** — same SHA-256 fetch/cache pattern for credentials-backed sources (e.g. S3)
 
