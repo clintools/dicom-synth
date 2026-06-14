@@ -1,3 +1,10 @@
+# [1.6.0](https://github.com/clintools/dicom-synth/compare/v1.5.0...v1.6.0) (2026-06-14)
+
+
+### Features
+
+* add describe tool — DICOM tree to DatasetSpec ([94bf455](https://github.com/clintools/dicom-synth/commit/94bf4550ab35c2525ec460d9948999dce70e70ac))
+
 # [1.5.0](https://github.com/clintools/dicom-synth/compare/v1.4.0...v1.5.0) (2026-06-13)
 
 
