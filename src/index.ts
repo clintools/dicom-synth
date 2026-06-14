@@ -8,6 +8,11 @@ export {
   generateFile,
   writeCollectionFromSpec,
 } from './collection/writer.js'
+export {
+  type DescribeOptions,
+  type DescribeResult,
+  describeDirectory,
+} from './describe/describe.js'
 // Public fixture fetch/cache (unchanged)
 export {
   defaultPublicCasesPath,

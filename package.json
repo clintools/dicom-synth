@@ -23,7 +23,8 @@
   "types": "dist/types/index.d.ts",
   "bin": {
     "dicom-synth-generate": "./bin/dicom-synth-generate.mjs",
-    "dicom-synth-fetch": "./bin/dicom-synth-fetch.mjs"
+    "dicom-synth-fetch": "./bin/dicom-synth-fetch.mjs",
+    "dicom-synth-describe": "./bin/dicom-synth-describe.mjs"
   },
   "exports": {
     ".": {
