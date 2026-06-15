@@ -42,6 +42,7 @@ export type {
   ParametricEdgeCase,
   ParametricSpec,
   ParametricStudies,
+  PathQuirk,
   Range,
   SeriesEntrySpec,
   SeriesSpec,
