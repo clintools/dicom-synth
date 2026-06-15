@@ -287,6 +287,33 @@ import type { StudySpec, SeriesSpec, SeriesEntrySpec } from 'dicom-synth'
 
 `GeneratedFile.relativePath` carries the layout-aware path for in-process consumers; `filename` is always the basename.
 
+### Path quirks (`pathQuirks`)
+
+Decorate written paths with edge-case names to exercise consumer file handling (e.g. the Chrome File System Access API). Quirks apply to the relative paths the layout already produces — DICOM byte content is unchanged.
+
+```json
+{
+  "studies": [{ "series": [{ "entries": [{ "type": "valid-image", "count": 3 }] }] }],
+  "layout": "hierarchical",
+  "pathQuirks": ["trailing-dot", "unicode"]
+}
+```
+
+| Quirk | Effect |
+|---|---|
+| `trailing-dot` | Appends `.` to each directory component (`study-001./series-001./…`); on flat output, to the filename |
+| `unicode` | Inserts a non-ASCII character into directory and file names |
+| `deep-nesting` | Injects extra nested directory levels before the file |
+| `long-name` | Pads the filename stem and the deepest directory component toward the 255-byte limit |
+
+Decorations are stable per path component, so a series' files still share one directory. Quirks compose; the result is deterministic and independent of the order they're listed in.
+
+> **Cross-platform:** these names are writable on POSIX (Linux/macOS, where CI runs) but Windows rewrites or rejects several (trailing dots, reserved names, long paths). The intent is to *feed* a downstream consumer (e.g. a browser), not to round-trip on Windows.
+
+```ts
+import type { PathQuirk } from 'dicom-synth'
+```
+
 ### Tag overrides (`tags`)
 
 Available on all image types.
