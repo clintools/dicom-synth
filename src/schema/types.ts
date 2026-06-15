@@ -83,11 +83,21 @@ export type StudySpec = {
 // hierarchical: grouped files written as study-NNN/series-NNN/NNNNN.dcm.
 export type DatasetLayout = 'flat' | 'hierarchical'
 
+// Edge-case decorations applied to written paths to exercise consumer file
+// handling (e.g. the Chrome File System Access API). Decorations are stable per
+// path component, so grouped files still share their study/series directories.
+export type PathQuirk =
+  | 'trailing-dot'
+  | 'unicode'
+  | 'deep-nesting'
+  | 'long-name'
+
 export type DatasetSpec = {
   entries?: EntrySpec[]
   studies?: StudySpec[]
   seed?: number
   layout?: DatasetLayout
+  pathQuirks?: PathQuirk[]
 }
 
 // A fixed value or an inclusive {min, max} sampled at resolution time.

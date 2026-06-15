@@ -6,6 +6,7 @@ import type {
   DicomTagOverrides,
   EntrySpec,
   FileSpec,
+  PathQuirk,
   StudySpec,
 } from '../schema/types.js'
 import { buildBufferForSpec } from '../syntheticFixtures/generator.js'
@@ -98,6 +99,71 @@ export async function generateFile(
   }
 }
 
+// FNV-1a — stable per-string hash so a given path component always picks the
+// same decoration, keeping a series' files under one directory.
+function hashString(s: string): number {
+  let h = 2166136261
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h >>> 0
+}
+
+const UNICODE_TOKENS = ['é', 'ü', 'ñ', '日', '™', 'Ω']
+const NEST_DEPTH = 8
+const LONG_NAME_TARGET = 200 // stays under the 255-byte component limit
+
+// Decorate a relative path with edge-case quirks. Component decorations are
+// derived from the component string (not the file index), so files sharing a
+// directory keep sharing it.
+function applyPathQuirks(
+  relativePath: string,
+  quirks: PathQuirk[],
+): { relativePath: string; filename: string } {
+  const segments = relativePath.split('/')
+  let dirs = segments.slice(0, -1)
+  const leaf = segments[segments.length - 1] as string
+
+  const dot = leaf.lastIndexOf('.')
+  let stem = dot > 0 ? leaf.slice(0, dot) : leaf
+  const ext = dot > 0 ? leaf.slice(dot) : ''
+
+  const unicode = (s: string) =>
+    `${s}${UNICODE_TOKENS[hashString(s) % UNICODE_TOKENS.length]}`
+  const has = (q: PathQuirk) => quirks.includes(q)
+
+  if (has('deep-nesting')) {
+    dirs = [...dirs, ...Array.from({ length: NEST_DEPTH }, (_, i) => `d${i}`)]
+  }
+  if (has('unicode')) {
+    dirs = dirs.map(unicode)
+    stem = unicode(stem)
+  }
+  if (has('long-name')) {
+    const pad = (s: string) =>
+      s.length < LONG_NAME_TARGET
+        ? s + 'x'.repeat(LONG_NAME_TARGET - s.length)
+        : s
+    stem = pad(stem)
+    // Pad the deepest directory too (the long-component / long-path boundary),
+    // but only one component so the total path stays within OS limits.
+    if (dirs.length > 0) {
+      const last = dirs.length - 1
+      dirs = dirs.map((d, i) => (i === last ? pad(d) : d))
+    }
+  }
+
+  let newLeaf = stem + ext
+  if (has('trailing-dot')) {
+    // No directories (flat) — apply the trailing dot to the file instead.
+    if (dirs.length > 0) dirs = dirs.map((d) => `${d}.`)
+    else newLeaf += '.'
+  }
+
+  return { relativePath: [...dirs, newLeaf].join('/'), filename: newLeaf }
+}
+
 // Grouped-file naming under layout: 'hierarchical'.
 function hierarchicalName(
   studyOrdinal: number,
@@ -124,17 +190,25 @@ export async function* generateCollectionFromSpec(
   const totalFiles = entryCount(flatEntries) + studyFileCount(studies)
   const padWidth = String(totalFiles).length
   const hierarchical = spec.layout === 'hierarchical'
+  const quirks = spec.pathQuirks ?? []
+
+  const decorate = (file: GeneratedFile): GeneratedFile =>
+    quirks.length === 0
+      ? file
+      : { ...file, ...applyPathQuirks(file.relativePath, quirks) }
 
   let globalIndex = 0
 
   for (const entry of flatEntries) {
     const { count = 1, ...fileSpec } = entry as FileSpec & { count?: number }
     for (let i = 0; i < count; i++) {
-      yield generateFile(fileSpec as FileSpec, {
-        index: globalIndex,
-        seed: spec.seed,
-        padWidth,
-      })
+      yield decorate(
+        await generateFile(fileSpec as FileSpec, {
+          index: globalIndex,
+          seed: spec.seed,
+          padWidth,
+        }),
+      )
       globalIndex++
     }
   }
@@ -167,16 +241,18 @@ export async function* generateCollectionFromSpec(
                 uid: { study: studyUid, series: seriesUid },
               },
             )
-            yield hierarchical
-              ? {
-                  ...file,
-                  ...hierarchicalName(
-                    studyOrdinal,
-                    seriesIndex,
-                    instanceNumber,
-                  ),
-                }
-              : file
+            yield decorate(
+              hierarchical
+                ? {
+                    ...file,
+                    ...hierarchicalName(
+                      studyOrdinal,
+                      seriesIndex,
+                      instanceNumber,
+                    ),
+                  }
+                : file,
+            )
             globalIndex++
           }
         }

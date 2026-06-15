@@ -7,6 +7,7 @@ import type {
   ParametricEdgeCase,
   ParametricSpec,
   ParametricStudies,
+  PathQuirk,
   Range,
   SeriesSpec,
   StudySpec,
@@ -35,6 +36,13 @@ const VALID_LAYOUTS = {
   flat: true,
   hierarchical: true,
 } as const satisfies Record<DatasetLayout, true>
+
+const VALID_PATH_QUIRKS = {
+  'trailing-dot': true,
+  unicode: true,
+  'deep-nesting': true,
+  'long-name': true,
+} as const satisfies Record<PathQuirk, true>
 
 const VALID_TRANSFER_SYNTAXES = {
   'explicit-vr-little-endian': true,
@@ -275,11 +283,23 @@ export function validateDatasetSpec(raw: unknown): DatasetSpec {
     validateEnum(r.layout, VALID_LAYOUTS, 'DatasetSpec.layout')
   }
 
+  if ('pathQuirks' in r) {
+    if (!Array.isArray(r.pathQuirks)) {
+      throw new Error('DatasetSpec.pathQuirks: must be an array')
+    }
+    for (const [i, q] of (r.pathQuirks as unknown[]).entries()) {
+      validateEnum(q, VALID_PATH_QUIRKS, `DatasetSpec.pathQuirks[${i}]`)
+    }
+  }
+
   return {
     ...(entries.length > 0 ? { entries } : {}),
     ...(studies.length > 0 ? { studies } : {}),
     ...(r.seed !== undefined ? { seed: r.seed as number } : {}),
     ...(r.layout !== undefined ? { layout: r.layout as DatasetLayout } : {}),
+    ...(r.pathQuirks !== undefined
+      ? { pathQuirks: r.pathQuirks as PathQuirk[] }
+      : {}),
   }
 }
 
