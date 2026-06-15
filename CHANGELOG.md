@@ -1,3 +1,10 @@
+# [1.7.0](https://github.com/clintools/dicom-synth/compare/v1.6.0...v1.7.0) (2026-06-15)
+
+
+### Features
+
+* add pathQuirks for edge-case file/directory names ([0ea4871](https://github.com/clintools/dicom-synth/commit/0ea4871071c48faf92f616d69d3a6dd0de809f82))
+
 # [1.6.0](https://github.com/clintools/dicom-synth/compare/v1.5.0...v1.6.0) (2026-06-14)
 
 
