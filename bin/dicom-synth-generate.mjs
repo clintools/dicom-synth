@@ -5,14 +5,18 @@ import {
   generateCollectionFromSpec,
   resolveParametricSpec,
   validateDatasetSpec,
+  withResolvedSeed,
   writeCollectionFromSpec,
 } from '../dist/esm/index.js'
 
 function usage() {
   console.error(
-    'Usage: dicom-synth-generate --schema <path> [--out <dir>] [--dry-run]\n' +
-      '       dicom-synth-generate --schema-inline <json> [--out <dir>] [--dry-run]\n' +
-      '       dicom-synth-generate --parametric <path> [--out <dir>] [--emit-spec <path>] [--dry-run]',
+    'Usage: dicom-synth-generate --schema <path> [--out <dir>] [--emit-spec <path>] [--dry-run]\n' +
+      '       dicom-synth-generate --schema-inline <json> [--out <dir>] [--emit-spec <path>] [--dry-run]\n' +
+      '       dicom-synth-generate --parametric <path> [--out <dir>] [--emit-spec <path>] [--dry-run]\n' +
+      '\n' +
+      'A seed is drawn when the spec omits one; pass --emit-spec to capture the\n' +
+      'effective spec (seed included) so the dataset can be re-created.',
   )
   process.exit(1)
 }
@@ -80,20 +84,25 @@ function printTypeCounts(counts) {
   }
 }
 
-if (emitSpecPath !== undefined && specSource !== '--parametric') {
-  console.error('Error: --emit-spec requires --parametric')
-  process.exit(1)
-}
+const seedProvided =
+  rawSpec !== null && typeof rawSpec === 'object' && 'seed' in rawSpec
 
 let spec
 try {
   spec =
     specSource === '--parametric'
       ? resolveParametricSpec(rawSpec)
-      : validateDatasetSpec(rawSpec)
+      : withResolvedSeed(validateDatasetSpec(rawSpec))
 } catch (err) {
   console.error(`Schema validation error: ${err.message}`)
   process.exit(1)
+}
+
+// Surface the drawn seed so a run is reproducible even without --emit-spec.
+if (!seedProvided) {
+  console.error(
+    `Generated with seed ${spec.seed} (pass --emit-spec to capture)`,
+  )
 }
 
 if (emitSpecPath !== undefined) {
