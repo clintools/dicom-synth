@@ -152,16 +152,46 @@ describe('dicom-synth-generate CLI', () => {
     },
   )
 
-  it.skipIf(!hasBuild)('rejects --emit-spec without --parametric', async () => {
-    const { code, stderr } = await run([
-      '--schema',
-      defaultSchema,
-      '--emit-spec',
-      join(tmpDir, 'spec.json'),
-    ])
-    expect(code).not.toBe(0)
-    expect(stderr).toMatch(/--emit-spec requires --parametric/)
-  })
+  it.skipIf(!hasBuild)(
+    'captures a drawn seed via --emit-spec on a seedless --schema-inline run',
+    async () => {
+      const specPath = join(tmpDir, 'effective.json')
+      const outDir = join(tmpDir, 'out')
+      const { code, stderr } = await run([
+        '--schema-inline',
+        '{"entries":[{"type":"valid-image","count":3}]}',
+        '--out',
+        outDir,
+        '--emit-spec',
+        specPath,
+      ])
+      expect(code).toBe(0)
+      expect(stderr).toMatch(/Generated with seed \d+/)
+
+      const effective = JSON.parse(readFileSync(specPath, 'utf8'))
+      expect(typeof effective.seed).toBe('number')
+
+      // Re-running the captured spec reproduces the identical tree.
+      const rerunDir = join(tmpDir, 'rerun')
+      const rerun = await run(['--schema', specPath, '--out', rerunDir])
+      expect(rerun.code).toBe(0)
+      expect(walkFiles(rerunDir).sort()).toEqual(walkFiles(outDir).sort())
+    },
+  )
+
+  it.skipIf(!hasBuild)(
+    'does not report a drawn seed when one is provided',
+    async () => {
+      const { code, stderr } = await run([
+        '--schema-inline',
+        '{"seed":7,"entries":[{"type":"valid-image"}]}',
+        '--out',
+        tmpDir,
+      ])
+      expect(code).toBe(0)
+      expect(stderr).not.toMatch(/Generated with seed/)
+    },
+  )
 
   it.skipIf(!hasBuild)(
     'rejects --schema combined with --parametric',

@@ -7,6 +7,7 @@ import type { GeneratedFile } from '../src/collection/writer'
 import {
   generateCollectionFromSpec,
   generateFile,
+  withResolvedSeed,
   writeCollectionFromSpec,
 } from '../src/collection/writer'
 import type { DatasetSpec } from '../src/schema/types'
@@ -455,6 +456,32 @@ describe('writeCollectionFromSpec — layer 3', () => {
     ])
     expect(readdirSync(join(tmpDir, 'study-001', 'series-001')).sort()).toEqual(
       ['00001.dcm', '00002.dcm'],
+    )
+  })
+})
+
+describe('withResolvedSeed', () => {
+  it('draws a numeric seed when none is provided', () => {
+    const resolved = withResolvedSeed({ entries: [{ type: 'valid-image' }] })
+    expect(typeof resolved.seed).toBe('number')
+  })
+
+  it('preserves an existing seed', () => {
+    const resolved = withResolvedSeed({
+      entries: [{ type: 'valid-image' }],
+      seed: 99,
+    })
+    expect(resolved.seed).toBe(99)
+  })
+
+  it('makes a seedless spec reproducible once resolved', async () => {
+    const resolved = withResolvedSeed({
+      studies: [{ series: [{ entries: [{ type: 'valid-image', count: 3 }] }] }],
+    })
+    const first = await collect(resolved)
+    const second = await collect(resolved)
+    expect(second.map((f) => f.buffer.toString('base64'))).toEqual(
+      first.map((f) => f.buffer.toString('base64')),
     )
   })
 })
