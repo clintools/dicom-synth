@@ -6,6 +6,7 @@ export {
   type GeneratedFile,
   generateCollectionFromSpec,
   generateFile,
+  withResolvedSeed,
   writeCollectionFromSpec,
 } from './collection/writer.js'
 export {

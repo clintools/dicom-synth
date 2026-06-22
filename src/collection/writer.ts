@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
@@ -176,6 +177,15 @@ function hierarchicalName(
     filename: name,
     relativePath: `study-${pad3(studyOrdinal + 1)}/series-${pad3(seriesIndex + 1)}/${name}`,
   }
+}
+
+// Fills in a drawn seed when the spec has none, so the run is reproducible and
+// the seed can be captured (mirrors resolveParametricSpec's seed embedding).
+// Generate from the returned spec, then persist it to re-create the dataset.
+export function withResolvedSeed(spec: DatasetSpec): DatasetSpec {
+  return spec.seed === undefined
+    ? { ...spec, seed: randomBytes(4).readUInt32BE(0) }
+    : spec
 }
 
 // Layer 2 — collection stream, no I/O.
