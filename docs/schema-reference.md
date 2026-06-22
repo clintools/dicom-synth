@@ -19,7 +19,19 @@ type DatasetSpec = {
 
 At least one of `entries` or `studies` must be present and non-empty; both may be used together.
 
-`seed` makes UID generation fully deterministic across runs. Omit it for random UIDs.
+`seed` makes UID generation fully deterministic across runs — the same spec + seed produces a byte-identical collection, so a small spec JSON is enough to re-create even a very large dataset.
+
+Omit `seed` for random UIDs. To keep a random run reproducible, resolve the seed first and persist the result:
+
+```ts
+import { withResolvedSeed, writeCollectionFromSpec } from 'dicom-synth'
+
+const effective = withResolvedSeed(spec) // fills in a drawn seed when absent
+await writeCollectionFromSpec(effective, './out')
+// persist `effective` (it now has a seed) to regenerate later
+```
+
+The `dicom-synth-generate` CLI does this automatically and reports the drawn seed — see the [CLI reference](./cli.md).
 
 ## `EntrySpec`
 

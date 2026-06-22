@@ -27,8 +27,10 @@ dicom-synth-generate --parametric examples/parametric.json --dry-run
 |---|---|
 | `--schema <path>` / `--schema-inline <json>` / `--parametric <path>` | Input spec (mutually exclusive) |
 | `--out <dir>` | Output directory (default `./fixtures/generated`) |
-| `--emit-spec <path>` | Write the resolved `DatasetSpec` JSON (requires `--parametric`) |
+| `--emit-spec <path>` | Write the effective `DatasetSpec` JSON (works for every input mode) |
 | `--dry-run` | Generate in memory and print the manifest; nothing is written |
+
+**Reproducibility:** when the spec omits a `seed`, one is drawn and reported on stderr (`Generated with seed <n>`). Pass `--emit-spec` to capture the effective spec — including that seed — so the exact dataset can be re-created later from a tiny JSON, even for very large outputs. Re-running `--schema <emitted>.json` reproduces the identical tree.
 
 The default schema (`examples/default.json`) generates one each of `valid-image`, `invalid-uid-image`, and `vendor-warnings-image`:
 
