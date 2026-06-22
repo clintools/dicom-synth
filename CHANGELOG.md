@@ -1,3 +1,10 @@
+# [1.8.0](https://github.com/clintools/dicom-synth/compare/v1.7.0...v1.8.0) (2026-06-22)
+
+
+### Features
+
+* capture a drawn seed on the plain generate path ([66b6283](https://github.com/clintools/dicom-synth/commit/66b6283e20dc29a7ed1f281b565a4d473bab72c4))
+
 # [1.7.0](https://github.com/clintools/dicom-synth/compare/v1.6.0...v1.7.0) (2026-06-15)
 
 
