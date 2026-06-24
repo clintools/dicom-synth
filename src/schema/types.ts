@@ -122,6 +122,10 @@ export type ParametricStudies = {
   fileSizeKb?: Range // per-file targetSizeKb; sampled per file when a range
   modalities?: Modality[] // one drawn per series; defaults to CT
   tags?: DicomTagOverrides
+  // Disk-only large-image members added per series. largeFilesPerSeries may be
+  // zero; largeFileBytes (per-file targetBytes, > 512 MB) is required when set.
+  largeFilesPerSeries?: Range
+  largeFileBytes?: Range
 }
 
 // frequency: per-file probability (0–1) drawn across the whole dataset, so the

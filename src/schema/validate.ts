@@ -74,6 +74,14 @@ function validatePositiveInt(value: unknown, path: string): void {
   }
 }
 
+function validateNonNegativeInt(value: unknown, path: string): void {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error(
+      `${path}: must be a non-negative integer; got ${JSON.stringify(value)}`,
+    )
+  }
+}
+
 function validateSeed(value: unknown, path: string): void {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new Error(
@@ -357,19 +365,26 @@ export function validateDatasetSpec(raw: unknown): DatasetSpec {
   }
 }
 
-function validateRange(value: unknown, path: string): Range {
+function validateRange(
+  value: unknown,
+  path: string,
+  options: { allowZero?: boolean } = {},
+): Range {
+  const checkInt = options.allowZero
+    ? validateNonNegativeInt
+    : validatePositiveInt
   if (typeof value === 'number') {
-    validatePositiveInt(value, path)
+    checkInt(value, path)
     return value
   }
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(
-      `${path}: must be a positive integer or { min, max }; got ${JSON.stringify(value)}`,
+      `${path}: must be an integer or { min, max }; got ${JSON.stringify(value)}`,
     )
   }
   const r = value as Record<string, unknown>
-  validatePositiveInt(r.min, `${path}.min`)
-  validatePositiveInt(r.max, `${path}.max`)
+  checkInt(r.min, `${path}.min`)
+  checkInt(r.max, `${path}.max`)
   if ((r.min as number) > (r.max as number)) {
     throw new Error(`${path}: min (${r.min}) must be ≤ max (${r.max})`)
   }
@@ -378,6 +393,10 @@ function validateRange(value: unknown, path: string): Range {
 
 function rangeMax(range: Range): number {
   return typeof range === 'number' ? range : range.max
+}
+
+function rangeMin(range: Range): number {
+  return typeof range === 'number' ? range : range.min
 }
 
 function validateParametricStudies(
@@ -401,6 +420,34 @@ function validateParametricStudies(
   if ('fileSizeKb' in s) {
     validateRange(s.fileSizeKb, `${path}.fileSizeKb`)
     validateSizeKbLimit(rangeMax(s.fileSizeKb as Range), `${path}.fileSizeKb`)
+  }
+
+  if ('largeFilesPerSeries' in s) {
+    validateRange(s.largeFilesPerSeries, `${path}.largeFilesPerSeries`, {
+      allowZero: true,
+    })
+    if (!('largeFileBytes' in s)) {
+      throw new Error(
+        `${path}.largeFileBytes: is required when largeFilesPerSeries is set`,
+      )
+    }
+  }
+
+  if ('largeFileBytes' in s) {
+    if (!('largeFilesPerSeries' in s)) {
+      throw new Error(
+        `${path}.largeFilesPerSeries: is required when largeFileBytes is set`,
+      )
+    }
+    validateRange(s.largeFileBytes, `${path}.largeFileBytes`)
+    validateLargeTargetBytes(
+      rangeMin(s.largeFileBytes as Range),
+      `${path}.largeFileBytes (min)`,
+    )
+    validateLargeTargetBytes(
+      rangeMax(s.largeFileBytes as Range),
+      `${path}.largeFileBytes (max)`,
+    )
   }
 
   if ('modalities' in s) {

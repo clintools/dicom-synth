@@ -19,6 +19,17 @@ function sample(next: () => number, range: Range): number {
   return range.min + (next() % (range.max - range.min + 1))
 }
 
+const BYTES_PER_MB = 1024 * 1024
+
+// Samples a byte range at MB granularity. Byte spans (up to ~50 GB) exceed the
+// 32-bit draw, which a plain modulo would silently truncate; bucketing by MB
+// keeps the span within 32 bits so the full range is reachable.
+function sampleBytes(next: () => number, range: Range): number {
+  if (typeof range === 'number') return range
+  const spanMb = Math.floor((range.max - range.min) / BYTES_PER_MB) + 1
+  return range.min + (next() % spanMb) * BYTES_PER_MB
+}
+
 function pick<T>(next: () => number, items: T[]): T {
   return items[next() % items.length] as T
 }
@@ -76,6 +87,39 @@ export function resolveParametricSpec(spec: ParametricSpec): DatasetSpec {
           ...(fileCount > 1 ? { count: fileCount } : {}),
         })
       }
+
+      // Disk-only large-image members, sharing the series modality. Only draws
+      // when configured, so specs without it resolve identically as before.
+      if (
+        params.largeFilesPerSeries !== undefined &&
+        params.largeFileBytes !== undefined
+      ) {
+        const largeCount = sample(next, params.largeFilesPerSeries)
+        const largeBase: SeriesEntrySpec = {
+          type: 'large-image',
+          targetBytes: 0,
+          ...(modality !== undefined ? { modality } : {}),
+        }
+        if (typeof params.largeFileBytes === 'number') {
+          // Fixed size: one counted entry.
+          if (largeCount > 0) {
+            entries.push({
+              ...largeBase,
+              targetBytes: params.largeFileBytes,
+              ...(largeCount > 1 ? { count: largeCount } : {}),
+            })
+          }
+        } else {
+          // Range: sample per file so sizes vary within the series.
+          for (let lf = 0; lf < largeCount; lf++) {
+            entries.push({
+              ...largeBase,
+              targetBytes: sampleBytes(next, params.largeFileBytes),
+            })
+          }
+        }
+      }
+
       series.push({ entries })
     }
     studies.push({
