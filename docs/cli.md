@@ -21,6 +21,9 @@ dicom-synth-generate --parametric examples/parametric.json --out ./out --emit-sp
 
 # Preview the manifest (paths, types, sizes) without writing anything
 dicom-synth-generate --parametric examples/parametric.json --dry-run
+
+# Stream a single very large DICOM straight to disk (512 MB – 50 GB)
+dicom-synth-generate --large-file huge.dcm --size 10gb --modality PT
 ```
 
 | Flag | Effect |
@@ -29,6 +32,9 @@ dicom-synth-generate --parametric examples/parametric.json --dry-run
 | `--out <dir>` | Output directory (default `./fixtures/generated`) |
 | `--emit-spec <path>` | Write the effective `DatasetSpec` JSON (works for every input mode) |
 | `--dry-run` | Generate in memory and print the manifest; nothing is written |
+| `--large-file <path> --size <600mb\|50gb>` | Stream one DICOM to disk; `--modality` optional. Mutually exclusive with the spec modes |
+
+**Very large files:** `--large-file` writes a single DICOM of approximately `--size` (512 MB – 50 GB) without buffering it in memory. Files up to ~4 GB are conformant native DICOM; larger files use encapsulated fragments (valid container, zero pixel content — see the [schema reference](./schema-reference.md#very-large-files-writelargeimagefile-512-mb--50-gb)). Generating tens of GB takes real disk and time.
 
 **Reproducibility:** when the spec omits a `seed`, one is drawn and reported on stderr (`Generated with seed <n>`). Pass `--emit-spec` to capture the effective spec — including that seed — so the exact dataset can be re-created later from a tiny JSON, even for very large outputs. Re-running `--schema <emitted>.json` reproduces the identical tree.
 

@@ -1,3 +1,4 @@
+import { MAX_PIXEL_BYTES, MAX_STREAM_BYTES } from './limits.js'
 import type {
   DatasetLayout,
   DatasetSpec,
@@ -20,6 +21,7 @@ const TYPE_CAPABILITIES = {
   'valid-image': { image: true },
   'invalid-uid-image': { image: true },
   'vendor-warnings-image': { image: true },
+  'large-image': { image: true },
   'fake-signature': { image: false },
   'non-dicom': { image: false },
   dicomdir: { image: false },
@@ -48,9 +50,6 @@ const VALID_TRANSFER_SYNTAXES = {
   'explicit-vr-little-endian': true,
   'implicit-vr-little-endian': true,
 } as const satisfies Record<TransferSyntax, true>
-
-// 512 MB — prevents accidental OOM from unreasonably large pixel sizing.
-const MAX_PIXEL_BYTES = 512 * 1024 * 1024
 
 // satisfies ensures this stays in sync with the ViolationClass union — a missing
 // member is a compile error.
@@ -89,6 +88,50 @@ function validateSizeKbLimit(kb: number, path: string): void {
   }
 }
 
+function validateLargeTargetBytes(value: unknown, path: string): void {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new Error(`${path}: must be an integer; got ${JSON.stringify(value)}`)
+  }
+  if (value <= MAX_PIXEL_BYTES) {
+    throw new Error(
+      `${path}: must exceed 512 MB — use targetSizeKb for smaller files`,
+    )
+  }
+  if (value > MAX_STREAM_BYTES) {
+    throw new Error(`${path}: exceeds the 50 GB limit`)
+  }
+}
+
+// large-image is image-generating but disk-only: sized by targetBytes, not
+// pixel geometry, so it accepts only modality/tags.
+function validateLargeImageEntry(
+  e: Record<string, unknown>,
+  path: string,
+): void {
+  for (const field of [
+    'rows',
+    'columns',
+    'frames',
+    'targetSizeKb',
+    'violations',
+    'transferSyntax',
+  ] as const) {
+    if (field in e) {
+      throw new Error(
+        `${path}.${field}: not supported for type "large-image" — use targetBytes`,
+      )
+    }
+  }
+  if (!('targetBytes' in e)) {
+    throw new Error(`${path}.targetBytes: is required for type "large-image"`)
+  }
+  validateLargeTargetBytes(e.targetBytes, `${path}.targetBytes`)
+  if ('modality' in e) {
+    validateEnum(e.modality, VALID_MODALITIES, `${path}.modality`)
+  }
+  if ('tags' in e) validateTags(e.tags, `${path}.tags`)
+}
+
 // Validates that `value` is a key of one of the VALID_* lookup tables, throwing
 // with the permitted values listed otherwise.
 function validateEnum(
@@ -124,6 +167,17 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
   const caps = TYPE_CAPABILITIES[type]
 
   if ('count' in e) validatePositiveInt(e.count, `${path}.count`)
+
+  if (type === 'large-image') {
+    validateLargeImageEntry(e, path)
+    return e as unknown as EntrySpec
+  }
+
+  if ('targetBytes' in e) {
+    throw new Error(
+      `${path}.targetBytes: only supported for type "large-image"`,
+    )
+  }
 
   for (const field of [
     'modality',

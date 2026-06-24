@@ -70,7 +70,7 @@ function buildTagToKeyword(): Map<string, string> {
 
 const tagToKeyword = buildTagToKeyword()
 
-function applyTagOverrides(
+export function applyTagOverrides(
   dataset: Record<string, unknown>,
   tags: DicomTagOverrides | undefined,
 ): void {
@@ -89,7 +89,7 @@ function applyTagOverrides(
   }
 }
 
-function buildMeta(
+export function buildMeta(
   uid: UidSet,
   modality: Modality,
   transferSyntax: TransferSyntax = 'explicit-vr-little-endian',
@@ -104,7 +104,7 @@ function buildMeta(
   }
 }
 
-function buildBaseImageDataset(
+export function buildBaseImageDataset(
   uid: UidSet,
   modality: Modality,
 ): Record<string, unknown> {
@@ -135,7 +135,7 @@ function buildBaseImageDataset(
   }
 }
 
-function serializeDict(
+export function serializeDict(
   meta: Record<string, unknown>,
   dataset: Record<string, unknown>,
 ): Buffer {
@@ -234,5 +234,9 @@ export function buildBufferForSpec(spec: FileSpec, uid: UidSet): Buffer {
       return buildNonDicomBuffer(spec.content)
     case 'dicomdir':
       return buildDicomdirBuffer()
+    case 'large-image':
+      throw new Error(
+        'large-image cannot be generated in memory — use writeCollectionFromSpec (disk-only streaming)',
+      )
   }
 }

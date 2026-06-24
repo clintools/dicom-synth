@@ -457,3 +457,70 @@ describe('validateDatasetSpec — studies', () => {
     ).toThrow(/layout: must be one of flat, hierarchical/)
   })
 })
+
+const MB = 1024 * 1024
+const GB = 1024 * MB
+
+describe('validateDatasetSpec — large-image entry', () => {
+  it('accepts a large-image with targetBytes in range', () => {
+    expect(() =>
+      validateDatasetSpec({
+        entries: [{ type: 'large-image', targetBytes: 600 * MB }],
+      }),
+    ).not.toThrow()
+  })
+
+  it('requires targetBytes', () => {
+    expect(() =>
+      validateDatasetSpec({ entries: [{ type: 'large-image' }] }),
+    ).toThrow(/targetBytes.*required/)
+  })
+
+  it('rejects targetBytes at or below 512 MB', () => {
+    expect(() =>
+      validateDatasetSpec({
+        entries: [{ type: 'large-image', targetBytes: 512 * MB }],
+      }),
+    ).toThrow(/512 MB/)
+  })
+
+  it('rejects targetBytes above 50 GB', () => {
+    expect(() =>
+      validateDatasetSpec({
+        entries: [{ type: 'large-image', targetBytes: 51 * GB }],
+      }),
+    ).toThrow(/50 GB/)
+  })
+
+  it('rejects pixel-sizing fields on large-image', () => {
+    expect(() =>
+      validateDatasetSpec({
+        entries: [
+          { type: 'large-image', targetBytes: 600 * MB, targetSizeKb: 100 },
+        ],
+      }),
+    ).toThrow(/not supported for type "large-image"/)
+  })
+
+  it('rejects targetBytes on a normal image type', () => {
+    expect(() =>
+      validateDatasetSpec({
+        entries: [{ type: 'valid-image', targetBytes: 600 * MB }],
+      }),
+    ).toThrow(/only supported for type "large-image"/)
+  })
+
+  it('allows large-image inside a series', () => {
+    expect(() =>
+      validateDatasetSpec({
+        studies: [
+          {
+            series: [
+              { entries: [{ type: 'large-image', targetBytes: 600 * MB }] },
+            ],
+          },
+        ],
+      }),
+    ).not.toThrow()
+  })
+})

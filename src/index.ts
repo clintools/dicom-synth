@@ -3,9 +3,11 @@
 // Collection API
 export {
   type CollectionManifest,
+  type CollectionPreviewItem,
   type GeneratedFile,
   generateCollectionFromSpec,
   generateFile,
+  previewCollection,
   withResolvedSeed,
   writeCollectionFromSpec,
 } from './collection/writer.js'
@@ -28,6 +30,7 @@ export {
   fetchPublicCaseToCache,
   verifySha256,
 } from './public-fixtures/fetch.js'
+export { MAX_PIXEL_BYTES, MAX_STREAM_BYTES } from './schema/limits.js'
 export { resolveParametricSpec } from './schema/parametric.js'
 export type {
   DatasetLayout,
@@ -38,6 +41,7 @@ export type {
   FileSpec,
   ImageSpec,
   InvalidUidImageSpec,
+  LargeFileSpec,
   Modality,
   NonDicomSpec,
   ParametricEdgeCase,
@@ -58,3 +62,11 @@ export {
   validateDatasetSpec,
   validateParametricSpec,
 } from './schema/validate.js'
+export {
+  type LargeFileEncoding,
+  type LargeFileResult,
+  type LargeImageSpec,
+  type StreamLargeImageOptions,
+  streamLargeImage,
+  writeLargeImageFile,
+} from './syntheticFixtures/streamWrite.js'

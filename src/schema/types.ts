@@ -45,6 +45,16 @@ export type FakeSignatureSpec = { type: 'fake-signature' }
 export type NonDicomSpec = { type: 'non-dicom'; content?: string }
 export type DicomdirSpec = { type: 'dicomdir' }
 
+// Disk-only: a single DICOM larger than the in-memory 512 MB cap (to ~50 GB),
+// written via the streaming writer. It cannot be produced in memory, so it is
+// only valid through writeCollectionFromSpec — generateFile rejects it.
+export type LargeFileSpec = {
+  type: 'large-image'
+  targetBytes: number
+  modality?: Modality
+  tags?: DicomTagOverrides
+}
+
 // Image-generating specs: carry modality/tags/violations/transferSyntax and
 // can participate in study/series grouping.
 export type ImageSpec =
@@ -58,6 +68,7 @@ export type FileSpec =
   | FakeSignatureSpec
   | NonDicomSpec
   | DicomdirSpec
+  | LargeFileSpec
 
 // EntrySpec: collection-layer wrapper — adds how many times to generate a FileSpec.
 // Only DatasetSpec / generateCollectionFromSpec ever sees EntrySpec.
@@ -65,7 +76,8 @@ export type EntrySpec = FileSpec & { count?: number }
 
 // SeriesSpec: files sharing one SeriesInstanceUID. Only image-generating types
 // can be grouped — shared UIDs flow through the generator's UidSet channel.
-export type SeriesEntrySpec = ImageSpec & { count?: number }
+// large-image members are written disk-only via the streaming writer.
+export type SeriesEntrySpec = (ImageSpec | LargeFileSpec) & { count?: number }
 
 export type SeriesSpec = {
   entries: SeriesEntrySpec[]

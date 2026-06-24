@@ -84,6 +84,7 @@ describe('describeDirectory', () => {
     const modalities = new Set(entries.map((e) => e.modality))
     expect(modalities).toEqual(new Set(['CT', 'PT']))
     for (const e of entries) {
+      if (e.type === 'large-image') continue
       expect(e.targetSizeKb).toBeGreaterThan(0)
     }
   })

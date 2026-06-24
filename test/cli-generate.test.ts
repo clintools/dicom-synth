@@ -224,4 +224,117 @@ describe('dicom-synth-generate CLI', () => {
     expect(stdout).toMatch(/valid-image.*2/)
     expect(stdout).toMatch(/fake-signature.*1/)
   })
+
+  it.skipIf(!hasBuild)(
+    'dry-run previews a large-image entry without writing it',
+    async () => {
+      const inline = JSON.stringify({
+        entries: [
+          { type: 'valid-image', count: 1 },
+          { type: 'large-image', targetBytes: 600 * 1024 * 1024 },
+        ],
+      })
+      const outDir = join(tmpDir, 'out')
+      const { code, stdout } = await run([
+        '--schema-inline',
+        inline,
+        '--out',
+        outDir,
+        '--dry-run',
+      ])
+      expect(code).toBe(0)
+      expect(stdout).toMatch(/large-image/)
+      expect(stdout).toMatch(/nothing written/)
+      expect(existsSync(outDir)).toBe(false)
+    },
+  )
+
+  it.skipIf(!hasBuild)('rejects --large-file without --size', async () => {
+    const { code, stderr } = await run([
+      '--large-file',
+      join(tmpDir, 'big.dcm'),
+    ])
+    expect(code).not.toBe(0)
+    expect(stderr).toMatch(/requires --size/)
+  })
+
+  it.skipIf(!hasBuild)(
+    'rejects --large-file combined with a spec mode',
+    async () => {
+      const { code, stderr } = await run([
+        '--large-file',
+        join(tmpDir, 'big.dcm'),
+        '--size',
+        '600mb',
+        '--schema',
+        defaultSchema,
+      ])
+      expect(code).not.toBe(0)
+      expect(stderr).toMatch(/cannot be combined/)
+    },
+  )
+
+  it.skipIf(!hasBuild)('rejects a large-file size below 512 MB', async () => {
+    const { code, stderr } = await run([
+      '--large-file',
+      join(tmpDir, 'big.dcm'),
+      '--size',
+      '100mb',
+    ])
+    expect(code).not.toBe(0)
+    expect(stderr).toMatch(/512 MB/)
+  })
+
+  it.skipIf(!hasBuild)(
+    '--dry-run still rejects an out-of-range size',
+    async () => {
+      const { code, stderr } = await run([
+        '--large-file',
+        join(tmpDir, 'big.dcm'),
+        '--size',
+        '100mb',
+        '--dry-run',
+      ])
+      expect(code).not.toBe(0)
+      expect(stderr).toMatch(/512 MB/)
+    },
+  )
+
+  it.skipIf(!hasBuild)('rejects a --size without a unit', async () => {
+    const { code, stderr } = await run([
+      '--large-file',
+      join(tmpDir, 'big.dcm'),
+      '--size',
+      '600',
+    ])
+    expect(code).not.toBe(0)
+    expect(stderr).toMatch(/include a unit/)
+  })
+
+  it.skipIf(!hasBuild)(
+    '--large-file with --dry-run writes nothing',
+    async () => {
+      const out = join(tmpDir, 'big.dcm')
+      const { code, stdout } = await run([
+        '--large-file',
+        out,
+        '--size',
+        '50gb',
+        '--dry-run',
+      ])
+      expect(code).toBe(0)
+      expect(stdout).toMatch(/Dry run/)
+      expect(existsSync(out)).toBe(false)
+    },
+  )
+
+  const largeIt = hasBuild && process.env.DICOM_SYNTH_LARGE_TEST ? it : it.skip
+
+  largeIt('streams a >512 MB file via --large-file (opt-in)', async () => {
+    const out = join(tmpDir, 'big.dcm')
+    const { code, stdout } = await run(['--large-file', out, '--size', '600mb'])
+    expect(code).toBe(0)
+    expect(stdout).toMatch(/native DICOM/)
+    expect(readFileSync(out).length).toBeGreaterThan(512 * 1024 * 1024)
+  })
 })

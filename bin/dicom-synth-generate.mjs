@@ -2,11 +2,14 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
-  generateCollectionFromSpec,
+  MAX_PIXEL_BYTES,
+  MAX_STREAM_BYTES,
+  previewCollection,
   resolveParametricSpec,
   validateDatasetSpec,
   withResolvedSeed,
   writeCollectionFromSpec,
+  writeLargeImageFile,
 } from '../dist/esm/index.js'
 
 function usage() {
@@ -14,11 +17,29 @@ function usage() {
     'Usage: dicom-synth-generate --schema <path> [--out <dir>] [--emit-spec <path>] [--dry-run]\n' +
       '       dicom-synth-generate --schema-inline <json> [--out <dir>] [--emit-spec <path>] [--dry-run]\n' +
       '       dicom-synth-generate --parametric <path> [--out <dir>] [--emit-spec <path>] [--dry-run]\n' +
+      '       dicom-synth-generate --large-file <path> --size <600mb|50gb> [--modality CT|PT|MR|CR]\n' +
       '\n' +
       'A seed is drawn when the spec omits one; pass --emit-spec to capture the\n' +
-      'effective spec (seed included) so the dataset can be re-created.',
+      'effective spec (seed included) so the dataset can be re-created.\n' +
+      '\n' +
+      '--large-file streams a single DICOM (512 MB–50 GB) to disk; files above\n' +
+      '~4 GB use encapsulated fragments (valid container, zero pixel content).',
   )
   process.exit(1)
+}
+
+const SIZE_UNITS = { b: 1, kb: 1024, mb: 1024 * 1024, gb: 1024 * 1024 * 1024 }
+
+function parseSizeToBytes(s) {
+  // Unit is required so a bare number (e.g. "600", meant as MB) is not silently
+  // read as 600 bytes.
+  const m = /^([0-9]*\.?[0-9]+)\s*(b|kb|mb|gb)$/i.exec(s.trim())
+  if (!m) {
+    throw new Error(
+      `invalid --size "${s}" — include a unit, e.g. 600mb or 50gb`,
+    )
+  }
+  return Math.round(Number.parseFloat(m[1]) * SIZE_UNITS[m[2].toLowerCase()])
 }
 
 const args = process.argv.slice(2)
@@ -30,6 +51,9 @@ let specSource
 let outDir = resolve('./fixtures/generated')
 let emitSpecPath
 let dryRun = false
+let largeFilePath
+let largeFileSize
+let largeFileModality
 
 function readSpecArg(flag, value) {
   if (rawSpec !== undefined) {
@@ -70,10 +94,71 @@ for (let i = 0; i < args.length; i++) {
     emitSpecPath = resolve(args[++i])
   } else if (args[i] === '--dry-run') {
     dryRun = true
+  } else if (args[i] === '--large-file' && args[i + 1]) {
+    largeFilePath = resolve(args[++i])
+  } else if (args[i] === '--size' && args[i + 1]) {
+    largeFileSize = args[++i]
+  } else if (args[i] === '--modality' && args[i + 1]) {
+    largeFileModality = args[++i]
   } else {
     console.error(`Unknown argument: ${args[i]}`)
     usage()
   }
+}
+
+if (largeFilePath !== undefined) {
+  if (rawSpec !== undefined) {
+    console.error('Error: --large-file cannot be combined with a spec mode')
+    process.exit(1)
+  }
+  if (largeFileSize === undefined) {
+    console.error('Error: --large-file requires --size')
+    usage()
+  }
+  if (
+    largeFileModality !== undefined &&
+    !['CT', 'PT', 'MR', 'CR'].includes(largeFileModality)
+  ) {
+    console.error(`Error: invalid --modality "${largeFileModality}"`)
+    process.exit(1)
+  }
+  let targetBytes
+  try {
+    targetBytes = parseSizeToBytes(largeFileSize)
+  } catch (err) {
+    console.error(`Error: ${err.message}`)
+    process.exit(1)
+  }
+  // Validate bounds here so --dry-run reflects what a real run would accept.
+  if (targetBytes <= MAX_PIXEL_BYTES) {
+    console.error(
+      'Error: --size must exceed the 512 MB in-memory limit — use a spec with targetSizeKb for smaller files',
+    )
+    process.exit(1)
+  }
+  if (targetBytes > MAX_STREAM_BYTES) {
+    console.error('Error: --size exceeds the 50 GB limit')
+    process.exit(1)
+  }
+  if (dryRun) {
+    console.log(
+      `Dry run: would write ~${(targetBytes / 1024 / 1024).toFixed(1)} MB to ${largeFilePath} — nothing written`,
+    )
+    process.exit(0)
+  }
+  try {
+    const result = writeLargeImageFile(
+      { targetBytes, modality: largeFileModality },
+      largeFilePath,
+    )
+    console.log(
+      `Wrote ${(result.bytesWritten / 1024 / 1024).toFixed(1)} MB ${result.encoding} DICOM to ${result.path}`,
+    )
+  } catch (err) {
+    console.error(`Error writing large file: ${err.message}`)
+    process.exit(1)
+  }
+  process.exit(0)
 }
 
 if (rawSpec === undefined) usage()
@@ -120,13 +205,13 @@ if (dryRun) {
   let fileCount = 0
   let byteCount = 0
   try {
-    for await (const file of generateCollectionFromSpec(spec)) {
+    for await (const file of previewCollection(spec)) {
       console.log(
-        `${file.relativePath}  (${file.type}, ${(file.buffer.length / 1024).toFixed(1)} KB)`,
+        `${file.relativePath}  (${file.type}, ${(file.approxBytes / 1024).toFixed(1)} KB)`,
       )
       counts[file.type] = (counts[file.type] ?? 0) + 1
       fileCount++
-      byteCount += file.buffer.length
+      byteCount += file.approxBytes
     }
   } catch (err) {
     console.error(`Error generating collection: ${err.message}`)

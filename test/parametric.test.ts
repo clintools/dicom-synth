@@ -131,6 +131,7 @@ describe('resolveParametricSpec — structure', () => {
       for (const series of study.series) {
         expect(series.entries).toHaveLength(5)
         for (const entry of series.entries) {
+          if (entry.type === 'large-image') continue
           expect(entry.targetSizeKb).toBeGreaterThanOrEqual(100)
           expect(entry.targetSizeKb).toBeLessThanOrEqual(300)
         }
