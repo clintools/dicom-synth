@@ -1,3 +1,12 @@
+# [1.9.0](https://github.com/clintools/dicom-synth/compare/v1.8.0...v1.9.0) (2026-06-24)
+
+
+### Features
+
+* **describe:** capture large files header-only ([6cb8cbc](https://github.com/clintools/dicom-synth/commit/6cb8cbc1d609be49bcbdf91580ced38f19b06890))
+* generate large DICOM files (streaming writer + dataset entry) ([2817e3a](https://github.com/clintools/dicom-synth/commit/2817e3acb56267d23897af0d1018417e4d753371))
+* **parametric:** add large-file support ([4774708](https://github.com/clintools/dicom-synth/commit/4774708b278409615e5bff84f7c5c8086f1a4555))
+
 # [1.8.0](https://github.com/clintools/dicom-synth/compare/v1.7.0...v1.8.0) (2026-06-22)
 
 
