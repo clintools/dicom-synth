@@ -50,6 +50,7 @@ An `EntrySpec` is a `FileSpec` plus an optional `count` field (how many times to
 | `valid-image` | Standards-valid image (CT by default — see `modality`); numeric UIDs, complete meta header | strict |
 | `invalid-uid-image` | Image with non-numeric UIDs (letters in UID components) | edge |
 | `vendor-warnings-image` | Image with empty `Laterality` and `PatientWeight = 0` — produces dciodvfy warnings | edge |
+| `large-image` | A single DICOM >512 MB (to 50 GB), sized by `targetBytes` and streamed to disk — see below | strict (≤4 GB) |
 | `fake-signature` | 200-byte buffer with `XXXX` at preamble offset — no DICM magic | edge |
 | `non-dicom` | Arbitrary text buffer; no extension in filename | edge |
 | `dicomdir` | Minimal DICOMDIR file | strict |
@@ -83,6 +84,63 @@ Available on all image types. Two mutually exclusive mechanisms; omitting both p
 Pads `PixelData` so the file lands within ±2% or ±4 KB of the target (whichever is larger), accounting for tag and transfer-syntax overhead. `Rows`/`Columns` stay consistent with the pixel data, so the file remains conformant.
 
 Both mechanisms are capped at 512 MB of pixel data to prevent accidental OOM. A target smaller than the file's fixed overhead (roughly 1 KB) produces the minimal possible file, slightly above target. When sizing fields are set they control `Rows`, `Columns`, and `PixelData` — tag overrides of those keywords do not apply.
+
+## Very large files (`writeLargeImageFile`, 512 MB – 50 GB)
+
+The 512 MB cap applies to the in-memory path, where the whole file is built as one buffer. To produce a single DICOM larger than that, use the **disk-only streaming writer**, which never holds the file in memory (`PixelData` is written in fixed chunks):
+
+```ts
+import { writeLargeImageFile } from 'dicom-synth'
+
+// Approximately 10 GB, written to disk without buffering it.
+writeLargeImageFile({ targetBytes: 10 * 1024 * 1024 * 1024 }, 'huge.dcm')
+```
+
+| Field | Meaning |
+|---|---|
+| `targetBytes` | Approximate total file size; must be `> 512 MB` and `≤ 50 GB` |
+| `modality` | Optional preset (defaults to `CT`) |
+| `seed` | Optional; fixes the instance UIDs so the file is reproducible |
+
+The encoding is chosen by size:
+
+- **≤ ~4 GB** — native `OW` `PixelData` with consistent `Rows`/`Columns`. Fully conformant; a defined-length element cannot exceed the 32-bit `0xFFFFFFFE` ceiling.
+- **> ~4 GB** — encapsulated, undefined-length `OB` `PixelData` split into fragments (declared transfer syntax: RLE Lossless). The container is structurally valid, but the fragment bytes are zeros, **not real compressed pixel data** — strict decoders may reject the pixels.
+
+The in-memory `generateFile`/`targetSizeKb` path keeps the 512 MB cap unchanged. Generating tens of GB takes real disk and time.
+
+For tests/CI, `streamLargeImage(path, { targetBytes, modality?, seed?, owMaxBytes?, fragmentBytes? })` is the low-level entry behind `writeLargeImageFile`. It applies no size floor, and overriding `owMaxBytes`/`fragmentBytes` forces either the native or encapsulated encoding at KB scale — so both code paths can be exercised inline without writing gigabytes:
+
+```ts
+import { streamLargeImage } from 'dicom-synth'
+
+// Forces the encapsulated path in ~16 KB.
+const { encoding } = streamLargeImage('frag.dcm', {
+  targetBytes: 16384,
+  seed: 1,
+  owMaxBytes: 1024,
+  fragmentBytes: 512,
+})
+```
+
+### `large-image` entry — a large file *inside* a dataset
+
+To place a large file in a collection (e.g. one big instance within a study/series), use the `large-image` entry type instead of the standalone writer:
+
+```json
+{ "type": "large-image", "targetBytes": 10737418240, "modality": "PT" }
+```
+
+| Field | Meaning |
+|---|---|
+| `targetBytes` | Approximate file size; must be `> 512 MB` and `≤ 50 GB` (required) |
+| `modality` | Optional preset (defaults to `CT`) |
+| `tags` | Optional tag overrides |
+
+- It can sit in a `studies → series` group and shares the group's `StudyInstanceUID`/`SeriesInstanceUID` and `InstanceNumber`, like any image entry.
+- It is **disk-only**: `writeCollectionFromSpec` streams it to disk; the in-memory `generateFile`/`generateCollectionFromSpec` reject it (it cannot be a buffer). `--dry-run` reports its `targetBytes` without writing.
+- Pixel-geometry fields (`rows`/`columns`/`frames`/`targetSizeKb`) and `violations` are not accepted — sizing is by `targetBytes`.
+- `describe` captures real files >512 MB as `large-image` entries (read header-only, so it never loads the pixel data).
 
 ## Modality presets (`modality`)
 

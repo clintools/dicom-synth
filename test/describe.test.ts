@@ -1,11 +1,13 @@
+import { closeSync, ftruncateSync, openSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { writeCollectionFromSpec } from '../src/collection/writer'
-import { describeDirectory } from '../src/describe/describe'
+import { describeDirectory, readHeaderOnly } from '../src/describe/describe'
 import type { DatasetSpec, SeriesEntrySpec } from '../src/schema/types'
 import { validateDatasetSpec } from '../src/schema/validate'
+import { parseNatural } from './helpers/dicom'
 
 const allEntries = (spec: DatasetSpec): SeriesEntrySpec[] =>
   (spec.studies ?? []).flatMap((s) =>
@@ -84,6 +86,7 @@ describe('describeDirectory', () => {
     const modalities = new Set(entries.map((e) => e.modality))
     expect(modalities).toEqual(new Set(['CT', 'PT']))
     for (const e of entries) {
+      if (e.type === 'large-image') continue
       expect(e.targetSizeKb).toBeGreaterThan(0)
     }
   })
@@ -156,6 +159,20 @@ describe('describeDirectory', () => {
     expect(stats.skipped).toBe(2)
   })
 
+  it('skips a file beyond the 50 GB ceiling', () => {
+    // Sparse file: reports >50 GB via statSync but uses ~no disk.
+    const huge = join(dir, 'huge.dcm')
+    const fd = openSync(huge, 'w')
+    try {
+      ftruncateSync(fd, 51 * 1024 * 1024 * 1024)
+    } finally {
+      closeSync(fd)
+    }
+    const { stats } = describeDirectory(dir)
+    expect(stats.dicomFiles).toBe(6)
+    expect(stats.skipped).toBeGreaterThanOrEqual(1)
+  })
+
   it('is deterministic across runs', () => {
     expect(describeDirectory(dir).spec).toEqual(describeDirectory(dir).spec)
   })
@@ -167,5 +184,89 @@ describe('describeDirectory', () => {
     } finally {
       await rm(empty, { recursive: true, force: true })
     }
+  })
+})
+
+describe('readHeaderOnly', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'header-only-'))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('extracts metadata identically to a full read', async () => {
+    const manifest = await writeCollectionFromSpec(
+      { seed: 1, entries: [{ type: 'valid-image', modality: 'PT' }] },
+      dir,
+    )
+    const path = manifest[0]?.path as string
+    const header = readHeaderOnly(path)
+    const full = parseNatural(readFileSync(path))
+
+    expect(header?.StudyInstanceUID).toBe(full.StudyInstanceUID)
+    expect(header?.SeriesInstanceUID).toBe(full.SeriesInstanceUID)
+    expect(header?.SOPInstanceUID).toBe(full.SOPInstanceUID)
+    expect(header?.Modality).toBe('PT')
+  })
+
+  it('returns null for a non-DICOM file', async () => {
+    const path = join(dir, 'notes.txt')
+    await writeFile(path, 'not a dicom file')
+    expect(readHeaderOnly(path)).toBeNull()
+  })
+})
+
+// Opt-in: a real >512 MB file describe round-trip. Skipped by default (heavy
+// disk write) — set DICOM_SYNTH_LARGE_TEST=1.
+const largeIt = process.env.DICOM_SYNTH_LARGE_TEST ? it : it.skip
+
+describe('describeDirectory — large files (opt-in)', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'describe-large-'))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  largeIt('captures a >512 MB file as a large-image entry', async () => {
+    const targetBytes = 600 * 1024 * 1024
+    await writeCollectionFromSpec(
+      {
+        seed: 2,
+        layout: 'hierarchical',
+        studies: [
+          {
+            series: [
+              {
+                entries: [{ type: 'large-image', targetBytes, modality: 'PT' }],
+              },
+            ],
+          },
+        ],
+      },
+      dir,
+    )
+
+    const { spec, stats } = describeDirectory(dir)
+    expect(stats.dicomFiles).toBe(1)
+
+    const entries = (spec.studies ?? []).flatMap((s) =>
+      s.series.flatMap((series) => series.entries),
+    )
+    expect(entries).toHaveLength(1)
+    const entry = entries[0]
+    expect(entry?.type).toBe('large-image')
+    if (entry?.type === 'large-image') {
+      expect(entry.targetBytes).toBeGreaterThan(512 * 1024 * 1024)
+      expect(entry.modality).toBe('PT')
+    }
+    expect(() => validateDatasetSpec(spec)).not.toThrow()
   })
 })

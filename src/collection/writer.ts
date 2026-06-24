@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import { MAX_STREAM_BYTES } from '../schema/limits.js'
 import type {
   DatasetSpec,
   DicomTagOverrides,
@@ -11,6 +12,7 @@ import type {
   StudySpec,
 } from '../schema/types.js'
 import { buildBufferForSpec } from '../syntheticFixtures/generator.js'
+import { streamLargeImage } from '../syntheticFixtures/streamWrite.js'
 import type { UidSet } from '../syntheticFixtures/uid.js'
 import {
   makeGroupUidGenerator,
@@ -63,6 +65,16 @@ function studyFileCount(studies: StudySpec[]): number {
   )
 }
 
+// Resolves a file's UID set from (seed, index) with optional shared study/series
+// overrides — the single seam used by both the in-memory and streaming paths.
+function resolveUid(
+  seed: number | undefined,
+  index: number,
+  override?: Partial<UidSet>,
+): UidSet {
+  return { ...makeUidGenerator(seed)(index), ...override }
+}
+
 // Layer 1 — single file, no I/O.
 // options.index: position within a collection (defaults to 0 for ad-hoc calls).
 // options.seed:  drives the seeded PRNG for UID generation; omit for random UIDs.
@@ -80,8 +92,7 @@ export async function generateFile(
 ): Promise<GeneratedFile> {
   const index = options?.index ?? 0
   const padWidth = options?.padWidth ?? 3
-  const uidGen = makeUidGenerator(options?.seed)
-  const uid = { ...uidGen(index), ...options?.uid }
+  const uid = resolveUid(options?.seed, index, options?.uid)
 
   let buffer = buildBufferForSpec(spec, uid)
 
@@ -188,13 +199,46 @@ export function withResolvedSeed(spec: DatasetSpec): DatasetSpec {
     : spec
 }
 
-// Layer 2 — collection stream, no I/O.
-// Flat entries keep their own study/series UIDs per file. Grouped studies share
-// a StudyInstanceUID per study copy and a SeriesInstanceUID per series, threaded
-// through the generator's UidSet channel; user-supplied tags still win.
-export async function* generateCollectionFromSpec(
-  spec: DatasetSpec,
-): AsyncGenerator<GeneratedFile> {
+// A single file's identity within a collection, resolved (final names, UID
+// overrides, merged tags) but not yet materialised — so the disk writer can
+// stream large-image entries while the in-memory path builds buffers.
+type FilePlan = {
+  fileSpec: FileSpec
+  index: number
+  uidOverride?: Partial<UidSet>
+  filename: string
+  relativePath: string
+}
+
+function computeNames(
+  type: FileSpec['type'],
+  index: number,
+  padWidth: number,
+  grouped:
+    | { studyOrdinal: number; seriesIndex: number; instanceNumber: number }
+    | undefined,
+  quirks: PathQuirk[],
+): { filename: string; relativePath: string } {
+  let names: { filename: string; relativePath: string }
+  if (grouped) {
+    names = hierarchicalName(
+      grouped.studyOrdinal,
+      grouped.seriesIndex,
+      grouped.instanceNumber,
+    )
+  } else {
+    const name = filename(type, index, padWidth)
+    names = { filename: name, relativePath: name }
+  }
+  return quirks.length === 0
+    ? names
+    : applyPathQuirks(names.relativePath, quirks)
+}
+
+// Walks the spec into per-file plans (no I/O, no buffers). Flat entries keep
+// their own UIDs; grouped studies share a StudyInstanceUID per study copy and a
+// SeriesInstanceUID per series; user-supplied tags still win.
+function* planCollection(spec: DatasetSpec): Generator<FilePlan> {
   const flatEntries = spec.entries ?? []
   const studies = spec.studies ?? []
   const totalFiles = entryCount(flatEntries) + studyFileCount(studies)
@@ -202,23 +246,22 @@ export async function* generateCollectionFromSpec(
   const hierarchical = spec.layout === 'hierarchical'
   const quirks = spec.pathQuirks ?? []
 
-  const decorate = (file: GeneratedFile): GeneratedFile =>
-    quirks.length === 0
-      ? file
-      : { ...file, ...applyPathQuirks(file.relativePath, quirks) }
-
   let globalIndex = 0
 
   for (const entry of flatEntries) {
     const { count = 1, ...fileSpec } = entry as FileSpec & { count?: number }
     for (let i = 0; i < count; i++) {
-      yield decorate(
-        await generateFile(fileSpec as FileSpec, {
-          index: globalIndex,
-          seed: spec.seed,
+      yield {
+        fileSpec: fileSpec as FileSpec,
+        index: globalIndex,
+        ...computeNames(
+          fileSpec.type,
+          globalIndex,
           padWidth,
-        }),
-      )
+          undefined,
+          quirks,
+        ),
+      }
       globalIndex++
     }
   }
@@ -242,27 +285,20 @@ export async function* generateCollectionFromSpec(
               ...series.tags,
               ...fileSpec.tags,
             }
-            const file = await generateFile(
-              { ...fileSpec, tags },
-              {
-                index: globalIndex,
-                seed: spec.seed,
+            yield {
+              fileSpec: { ...fileSpec, tags } as FileSpec,
+              index: globalIndex,
+              uidOverride: { study: studyUid, series: seriesUid },
+              ...computeNames(
+                fileSpec.type,
+                globalIndex,
                 padWidth,
-                uid: { study: studyUid, series: seriesUid },
-              },
-            )
-            yield decorate(
-              hierarchical
-                ? {
-                    ...file,
-                    ...hierarchicalName(
-                      studyOrdinal,
-                      seriesIndex,
-                      instanceNumber,
-                    ),
-                  }
-                : file,
-            )
+                hierarchical
+                  ? { studyOrdinal, seriesIndex, instanceNumber }
+                  : undefined,
+                quirks,
+              ),
+            }
             globalIndex++
           }
         }
@@ -272,7 +308,64 @@ export async function* generateCollectionFromSpec(
   }
 }
 
-// Layer 3 — disk writer, thin wrapper over Layer 2.
+async function materialisePlan(
+  plan: FilePlan,
+  seed: number | undefined,
+): Promise<GeneratedFile> {
+  const file = await generateFile(plan.fileSpec, {
+    index: plan.index,
+    seed,
+    uid: plan.uidOverride,
+  })
+  return { ...file, filename: plan.filename, relativePath: plan.relativePath }
+}
+
+// Layer 2 — collection stream, no I/O. In-memory only: large-image entries are
+// disk-only and throw here (via the generator), as they cannot be buffers.
+export async function* generateCollectionFromSpec(
+  spec: DatasetSpec,
+): AsyncGenerator<GeneratedFile> {
+  for (const plan of planCollection(spec)) {
+    yield await materialisePlan(plan, spec.seed)
+  }
+}
+
+export type CollectionPreviewItem = {
+  relativePath: string
+  type: FileSpec['type']
+  index: number
+  // Exact for buffered entries; targetBytes (approximate) for large-image.
+  approxBytes: number
+}
+
+// Manifest preview for --dry-run: enumerates every file without writing. Large
+// entries report their targetBytes instead of being materialised (they cannot
+// be buffers), so a spec containing large-image can still be previewed.
+export async function* previewCollection(
+  spec: DatasetSpec,
+): AsyncGenerator<CollectionPreviewItem> {
+  for (const plan of planCollection(spec)) {
+    if (plan.fileSpec.type === 'large-image') {
+      yield {
+        relativePath: plan.relativePath,
+        type: 'large-image',
+        index: plan.index,
+        approxBytes: plan.fileSpec.targetBytes,
+      }
+    } else {
+      const file = await materialisePlan(plan, spec.seed)
+      yield {
+        relativePath: plan.relativePath,
+        type: plan.fileSpec.type,
+        index: plan.index,
+        approxBytes: file.buffer.length,
+      }
+    }
+  }
+}
+
+// Layer 3 — disk writer. Normal entries are buffered then written; large-image
+// entries are streamed straight to disk (never held in memory).
 export async function writeCollectionFromSpec(
   spec: DatasetSpec,
   outDir: string,
@@ -282,15 +375,43 @@ export async function writeCollectionFromSpec(
 
   const manifest: CollectionManifest = []
   const createdDirs = new Set<string>([root])
-  for await (const file of generateCollectionFromSpec(spec)) {
-    const filePath = resolve(root, file.relativePath)
+  const ensureDir = (filePath: string) => {
     const dir = dirname(filePath)
     if (!createdDirs.has(dir)) {
       mkdirSync(dir, { recursive: true })
       createdDirs.add(dir)
     }
-    await writeFile(filePath, file.buffer)
-    manifest.push({ path: filePath, type: file.type, index: file.index })
+  }
+
+  for (const plan of planCollection(spec)) {
+    const filePath = resolve(root, plan.relativePath)
+    ensureDir(filePath)
+
+    if (plan.fileSpec.type === 'large-image') {
+      const large = plan.fileSpec
+      // Guard the one disk path that can silently consume huge space even on an
+      // unvalidated spec (streamLargeImage itself enforces no policy bounds).
+      if (large.targetBytes > MAX_STREAM_BYTES) {
+        throw new Error(
+          `large-image targetBytes (${large.targetBytes}) exceeds the 50 GB limit`,
+        )
+      }
+      const uid = resolveUid(spec.seed, plan.index, plan.uidOverride)
+      streamLargeImage(filePath, {
+        targetBytes: large.targetBytes,
+        modality: large.modality,
+        uid,
+        tags: large.tags,
+      })
+    } else {
+      const file = await materialisePlan(plan, spec.seed)
+      await writeFile(filePath, file.buffer)
+    }
+    manifest.push({
+      path: filePath,
+      type: plan.fileSpec.type,
+      index: plan.index,
+    })
   }
   return manifest
 }

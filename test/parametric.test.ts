@@ -131,6 +131,7 @@ describe('resolveParametricSpec — structure', () => {
       for (const series of study.series) {
         expect(series.entries).toHaveLength(5)
         for (const entry of series.entries) {
+          if (entry.type === 'large-image') continue
           expect(entry.targetSizeKb).toBeGreaterThanOrEqual(100)
           expect(entry.targetSizeKb).toBeLessThanOrEqual(300)
         }
@@ -337,5 +338,137 @@ describe('validateParametricSpec — invalid inputs', () => {
     expect(() =>
       validateParametricSpec({ ...valid, layout: 'nested' }),
     ).toThrow(/layout/)
+  })
+
+  it('rejects largeFilesPerSeries without largeFileBytes', () => {
+    expect(() =>
+      validateParametricSpec({
+        studies: { ...valid.studies, largeFilesPerSeries: 1 },
+      }),
+    ).toThrow(/largeFileBytes.*required/)
+  })
+
+  it('rejects largeFileBytes without largeFilesPerSeries', () => {
+    expect(() =>
+      validateParametricSpec({
+        studies: { ...valid.studies, largeFileBytes: 600 * 1024 * 1024 },
+      }),
+    ).toThrow(/largeFilesPerSeries.*required/)
+  })
+
+  it('rejects largeFileBytes at or below 512 MB', () => {
+    expect(() =>
+      validateParametricSpec({
+        studies: {
+          ...valid.studies,
+          largeFilesPerSeries: 1,
+          largeFileBytes: 512 * 1024 * 1024,
+        },
+      }),
+    ).toThrow(/512 MB/)
+  })
+
+  it('accepts a zero-inclusive largeFilesPerSeries range', () => {
+    expect(() =>
+      validateParametricSpec({
+        studies: {
+          ...valid.studies,
+          largeFilesPerSeries: { min: 0, max: 2 },
+          largeFileBytes: 600 * 1024 * 1024,
+        },
+      }),
+    ).not.toThrow()
+  })
+})
+
+describe('resolveParametricSpec — large files', () => {
+  const MB = 1024 * 1024
+
+  const allEntries = (spec: ReturnType<typeof resolveParametricSpec>) =>
+    (spec.studies ?? []).flatMap((s) =>
+      s.series.flatMap((series) => series.entries),
+    )
+
+  it('adds a large-image member per series, sharing the modality', () => {
+    const resolved = resolveParametricSpec({
+      seed: 11,
+      studies: {
+        count: 1,
+        seriesPerStudy: 2,
+        filesPerSeries: 3,
+        fileSizeKb: 50,
+        modalities: ['PT'],
+        largeFilesPerSeries: 1,
+        largeFileBytes: 600 * MB,
+      },
+    })
+
+    const large = allEntries(resolved).filter((e) => e.type === 'large-image')
+    expect(large).toHaveLength(2) // one per series × 2 series
+    for (const e of large) {
+      if (e.type === 'large-image') {
+        expect(e.targetBytes).toBe(600 * MB)
+        expect(e.modality).toBe('PT')
+      }
+    }
+    expect(() => validateDatasetSpec(resolved)).not.toThrow()
+  })
+
+  it('samples a wide largeFileBytes range across its full span (MB granularity)', () => {
+    const GB = 1024 * MB
+    const min = 5 * GB
+    const max = 40 * GB
+    const resolved = resolveParametricSpec({
+      seed: 3,
+      studies: {
+        count: 1,
+        seriesPerStudy: 1,
+        filesPerSeries: 1,
+        largeFilesPerSeries: 50,
+        largeFileBytes: { min, max },
+      },
+    })
+
+    const sizes = allEntries(resolved)
+      .filter((e) => e.type === 'large-image')
+      .map((e) => (e.type === 'large-image' ? e.targetBytes : 0))
+    expect(sizes).toHaveLength(50)
+    for (const b of sizes) {
+      expect(b).toBeGreaterThanOrEqual(min)
+      expect(b).toBeLessThanOrEqual(max)
+    }
+    // A plain 32-bit modulo would cap at min + ~4.29 GB (~9.3 GB); MB bucketing
+    // must reach well beyond that.
+    expect(Math.max(...sizes)).toBeGreaterThan(min + 4.29 * GB)
+  })
+
+  it('is deterministic with large files', () => {
+    const spec: ParametricSpec = {
+      seed: 5,
+      studies: {
+        count: 2,
+        seriesPerStudy: 1,
+        filesPerSeries: 2,
+        largeFilesPerSeries: 1,
+        largeFileBytes: 600 * MB,
+      },
+    }
+    expect(resolveParametricSpec(spec)).toEqual(resolveParametricSpec(spec))
+  })
+
+  it('resolves identically to before when largeFilesPerSeries is absent', () => {
+    const spec: ParametricSpec = {
+      seed: 9,
+      studies: {
+        count: 2,
+        seriesPerStudy: 2,
+        filesPerSeries: 3,
+        fileSizeKb: 40,
+      },
+    }
+    const resolved = resolveParametricSpec(spec)
+    expect(allEntries(resolved).some((e) => e.type === 'large-image')).toBe(
+      false,
+    )
   })
 })

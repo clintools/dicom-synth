@@ -1,6 +1,14 @@
-import { readdirSync, readFileSync } from 'node:fs'
+import {
+  closeSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { dcmjs } from '../loadDcmjs.js'
+import { MAX_PIXEL_BYTES, MAX_STREAM_BYTES } from '../schema/limits.js'
 import type {
   DatasetSpec,
   DicomTagOverrides,
@@ -88,20 +96,83 @@ function* walkFiles(dir: string): Generator<string> {
   }
 }
 
-function parseFile(
-  path: string,
-): { record: Record<string, unknown>; size: number } | null {
+function toArrayBuffer(buf: Buffer): ArrayBuffer {
+  return buf.buffer.slice(
+    buf.byteOffset,
+    buf.byteOffset + buf.byteLength,
+  ) as ArrayBuffer
+}
+
+function naturalize(ab: ArrayBuffer): Record<string, unknown> {
+  const parsed = dcmjsAny.data.DicomMessage.readFile(ab)
+  return dcmjsAny.data.DicomMetaDictionary.naturalizeDataset(parsed.dict)
+}
+
+function parseFull(path: string): Record<string, unknown> | null {
   try {
-    const buf = readFileSync(path)
-    const ab = buf.buffer.slice(
-      buf.byteOffset,
-      buf.byteOffset + buf.byteLength,
-    ) as ArrayBuffer
-    const parsed = dcmjsAny.data.DicomMessage.readFile(ab)
-    const record = dcmjsAny.data.DicomMetaDictionary.naturalizeDataset(
-      parsed.dict,
-    )
-    return { record, size: buf.byteLength }
+    return naturalize(toArrayBuffer(readFileSync(path)))
+  } catch {
+    return null
+  }
+}
+
+// PixelData (7FE0,0010) explicit-VR headers: tag + "OW" / "OB".
+const PIXEL_DATA_OW = Buffer.from([0xe0, 0x7f, 0x10, 0x00, 0x4f, 0x57])
+const PIXEL_DATA_OB = Buffer.from([0xe0, 0x7f, 0x10, 0x00, 0x4f, 0x42])
+// Zero-length OW PixelData, substituted so dcmjs parses the metadata.
+const EMPTY_OW_PIXEL_DATA = Buffer.from([
+  0xe0, 0x7f, 0x10, 0x00, 0x4f, 0x57, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+])
+const HEADER_READ_BYTES = 2 * 1024 * 1024
+
+// Finds the PixelData element header, requiring the two reserved bytes after the
+// VR to be zero so a coincidental tag+VR byte sequence inside an earlier
+// element's value is not mistaken for the element header. Returns the earliest
+// valid OW/OB offset, or -1.
+function findPixelDataOffset(prefix: Buffer): number {
+  let best = -1
+  for (const pattern of [PIXEL_DATA_OW, PIXEL_DATA_OB]) {
+    for (let from = 0; ; ) {
+      const i = prefix.indexOf(pattern, from)
+      if (i < 0) break
+      if (prefix[i + 6] === 0 && prefix[i + 7] === 0) {
+        if (best < 0 || i < best) best = i
+        break
+      }
+      from = i + 1
+    }
+  }
+  return best
+}
+
+// Reads a DICOM's metadata without loading its pixel data: a bounded prefix is
+// read, truncated at the PixelData element, and parsed with an empty PixelData.
+// Lets describe handle multi-GB files (where readFileSync would OOM). Returns
+// null for implicit-VR files or any file whose header is not in the prefix.
+export function readHeaderOnly(path: string): Record<string, unknown> | null {
+  let prefix: Buffer
+  try {
+    const fd = openSync(path, 'r')
+    try {
+      const buf = Buffer.alloc(HEADER_READ_BYTES)
+      const n = readSync(fd, buf, 0, HEADER_READ_BYTES, 0)
+      prefix = buf.subarray(0, n)
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return null
+  }
+
+  const tagIdx = findPixelDataOffset(prefix)
+  if (tagIdx < 0) return null
+
+  const headerOnly = Buffer.concat([
+    prefix.subarray(0, tagIdx),
+    EMPTY_OW_PIXEL_DATA,
+  ])
+  try {
+    return naturalize(toArrayBuffer(headerOnly))
   } catch {
     return null
   }
@@ -123,9 +194,12 @@ function extractTags(
   return found ? tags : undefined
 }
 
+// Files above the in-memory cap become disk-only large-image entries (sized by
+// targetBytes); others use targetSizeKb. Both derive from the raw file size.
 type EntryAccum = {
   modality?: Modality
-  targetSizeKb: number
+  large: boolean
+  bytes: number
   tags?: DicomTagOverrides
   count: number
 }
@@ -148,18 +222,33 @@ export function describeDirectory(
 
   // Sort paths for deterministic output independent of filesystem order.
   for (const path of [...walkFiles(dir)].sort()) {
-    const parsed = parseFile(path)
-    const studyUid = parsed?.record.StudyInstanceUID
-    const seriesUid = parsed?.record.SeriesInstanceUID
+    let size: number
+    try {
+      size = statSync(path).size
+    } catch {
+      stats.skipped++
+      continue
+    }
+    // A single file beyond the 50 GB ceiling cannot be reproduced as a
+    // large-image entry, so skip it rather than emit an un-revalidatable spec.
+    if (size > MAX_STREAM_BYTES) {
+      stats.skipped++
+      continue
+    }
+    // Files above the in-memory cap are read header-only (never loaded whole)
+    // and captured as disk-only large-image entries.
+    const large = size > MAX_PIXEL_BYTES
+    const record = large ? readHeaderOnly(path) : parseFull(path)
+    const studyUid = record?.StudyInstanceUID
+    const seriesUid = record?.SeriesInstanceUID
     if (
-      !parsed ||
+      !record ||
       typeof studyUid !== 'string' ||
       typeof seriesUid !== 'string'
     ) {
       stats.skipped++
       continue
     }
-    const { record } = parsed
     stats.dicomFiles++
 
     let modality: Modality | undefined
@@ -171,7 +260,7 @@ export function describeDirectory(
       }
     }
 
-    const sizeKb = Math.max(1, Math.round(parsed.size / 1024))
+    const sizeKb = Math.max(1, Math.round(size / 1024))
     const tags = keepKeywords.length
       ? extractTags(record, keepKeywords)
       : undefined
@@ -187,28 +276,32 @@ export function describeDirectory(
       study.set(seriesUid, series)
     }
 
-    // Collapse files into one counted entry only when modality, size, and kept
-    // tags all match — so tag/size variation within a series is preserved.
-    const collapseKey = JSON.stringify([modality ?? null, sizeKb, tags ?? null])
+    // Collapse files into one counted entry only when kind, modality, size, and
+    // kept tags all match — so tag/size variation within a series is preserved.
+    const collapseKey = JSON.stringify([
+      large,
+      modality ?? null,
+      large ? size : sizeKb,
+      tags ?? null,
+    ])
     const existing = series.get(collapseKey)
     if (existing) {
       existing.count++
     } else {
-      series.set(collapseKey, {
-        modality,
-        targetSizeKb: sizeKb,
-        tags,
-        count: 1,
-      })
+      series.set(collapseKey, { modality, large, bytes: size, tags, count: 1 })
     }
   }
 
   const studySpecs: StudySpec[] = [...studies.values()].map((study) => {
     const seriesSpecs: SeriesSpec[] = [...study.values()].map((series) => {
       const entries: SeriesEntrySpec[] = [...series.values()].map((acc) => ({
-        type: 'valid-image',
         ...(acc.modality !== undefined ? { modality: acc.modality } : {}),
-        targetSizeKb: acc.targetSizeKb,
+        ...(acc.large
+          ? { type: 'large-image' as const, targetBytes: acc.bytes }
+          : {
+              type: 'valid-image' as const,
+              targetSizeKb: Math.max(1, Math.round(acc.bytes / 1024)),
+            }),
         ...(acc.tags !== undefined ? { tags: acc.tags } : {}),
         ...(acc.count > 1 ? { count: acc.count } : {}),
       }))
