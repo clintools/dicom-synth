@@ -20,6 +20,10 @@ await writeCollectionFromSpec(spec, './reproduced')
   ```
 
   ⚠️ Tags are copied exactly as found. If a kept tag contains PHI, handling that PHI is the **caller's responsibility** — the tool extracts only what you name.
+- **Reserved tags are not kept verbatim**, even when named — they would desync or leak:
+  - **Modality** — a preset value (`CT`/`PT`/`MR`/`CR`) is reproduced from the captured `modality` field, so it is not copied. A **non-preset** modality (`US`, `NM`, …) has no field route and *is* kept verbatim, so such datasets round-trip.
+  - **Modality type-1 attrs** (`Units`, `DecayCorrection`, `CorrectedImage`, `ScanningSequence`, `SequenceVariant`) — owned by the preset; dropped with a warning.
+  - **UID-valued** (any `UI`-VR tag, e.g. `SOPInstanceUID`, `FrameOfReferenceUID`) — dropped with a warning; UID handling is deferred to the hash-derived UID path.
 - Files in a series collapse into one counted entry only when modality, size, and kept tags all match, so tag/size variation is preserved rather than flattened.
 - Non-DICOM, unparseable, or ungroupable files (missing study/series UIDs) are skipped and counted. An unsupported `Modality` is emitted as the default (CT) and counted.
 - Files larger than 512 MB are captured as [`large-image`](./schema-reference.md#large-image-entry--a-large-file-inside-a-dataset) entries (sized by `targetBytes`). They are read **header-only** — the pixel data is never loaded — so a multi-GB file is described without OOM. A file is skipped and counted if its header cannot be read this way: implicit-VR encoding, or metadata before the PixelData element exceeding ~2 MB. A single file beyond the 50 GB ceiling is also skipped (it cannot be reproduced).

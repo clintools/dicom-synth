@@ -1,3 +1,7 @@
+import {
+  findTemplateTokens,
+  TEMPLATE_VOCAB,
+} from '../syntheticFixtures/tagTemplate.js'
 import { MAX_PIXEL_BYTES, MAX_STREAM_BYTES } from './limits.js'
 import type {
   DatasetLayout,
@@ -253,12 +257,41 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
   return e as unknown as EntrySpec
 }
 
+// Modality's tag id — matched alongside the keyword so the hex form can't evade
+// the coupling guard below.
+const MODALITY_TAG = '00080060'
+
+// A preset modality (CT/PT/MR/CR) set via free-form tags would desync from the
+// preset-owned SOPClassUID / type-1 attrs — those must use the `modality` field.
+// Non-preset modalities (e.g. US, NM) have no preset, so tags stays their only
+// route and is allowed. Only validateDatasetSpec enforces this; the low-level
+// generateFile primitive trusts its input.
 function validateTags(tags: unknown, path: string): void {
   if (typeof tags !== 'object' || tags === null || Array.isArray(tags)) {
     throw new Error(`${path}: must be an object`)
   }
-  for (const key of Object.keys(tags as object)) {
+  for (const [key, value] of Object.entries(tags as object)) {
     validateTagKey(key, path)
+    const isModalityKey =
+      key === 'Modality' || key.toUpperCase() === MODALITY_TAG
+    if (
+      isModalityKey &&
+      typeof value === 'string' &&
+      Object.hasOwn(VALID_MODALITIES, value)
+    ) {
+      throw new Error(
+        `${path}.${key}: set a preset modality (${Object.keys(VALID_MODALITIES).join('/')}) via the "modality" field, not tags — it is coupled to SOPClassUID and type-1 attributes`,
+      )
+    }
+    if (typeof value === 'string') {
+      for (const name of findTemplateTokens(value)) {
+        if (!(TEMPLATE_VOCAB as readonly string[]).includes(name)) {
+          throw new Error(
+            `${path}.${key}: unknown placeholder "{${name}}" — allowed: ${TEMPLATE_VOCAB.map((v) => `{${v}}`).join(', ')}`,
+          )
+        }
+      }
+    }
   }
 }
 

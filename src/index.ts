@@ -70,3 +70,8 @@ export {
   streamLargeImage,
   writeLargeImageFile,
 } from './syntheticFixtures/streamWrite.js'
+export {
+  resolveTagTemplates,
+  type TagContext,
+  TEMPLATE_VOCAB,
+} from './syntheticFixtures/tagTemplate.js'

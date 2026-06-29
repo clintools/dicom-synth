@@ -2,7 +2,7 @@ import { closeSync, ftruncateSync, openSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { writeCollectionFromSpec } from '../src/collection/writer'
 import { describeDirectory, readHeaderOnly } from '../src/describe/describe'
 import type { DatasetSpec, SeriesEntrySpec } from '../src/schema/types'
@@ -114,9 +114,106 @@ describe('describeDirectory', () => {
     )
   })
 
+  it('drops preset-modality and UID-VR tags from keepTags', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { spec } = describeDirectory(dir, {
+        keepTags: ['Manufacturer', 'Modality', 'SOPInstanceUID'],
+      })
+      // Manufacturer survives; preset Modality (CT/PT here) and the UID tag are
+      // filtered out.
+      expect(
+        allEntries(spec).some((e) => e.tags?.Manufacturer === 'ACME'),
+      ).toBe(true)
+      for (const e of allEntries(spec)) {
+        expect(e.tags ?? {}).not.toHaveProperty('Modality')
+        expect(e.tags ?? {}).not.toHaveProperty('SOPInstanceUID')
+      }
+      // Only the UID tag warns (preset Modality is skipped silently per file).
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('keeps a non-preset Modality verbatim so it round-trips', async () => {
+    const usDir = await mkdtemp(join(tmpdir(), 'describe-us-keep-'))
+    const outDir = await mkdtemp(join(tmpdir(), 'describe-us-out-'))
+    try {
+      await writeCollectionFromSpec(
+        {
+          studies: [
+            {
+              series: [
+                {
+                  entries: [{ type: 'valid-image', tags: { Modality: 'US' } }],
+                },
+              ],
+            },
+          ],
+        },
+        usDir,
+      )
+      const { spec } = describeDirectory(usDir, { keepTags: ['Modality'] })
+      expect(allEntries(spec).every((e) => e.tags?.Modality === 'US')).toBe(
+        true,
+      )
+      expect(() => validateDatasetSpec(spec)).not.toThrow()
+      const manifest = await writeCollectionFromSpec(spec, outDir)
+      const regenerated = parseNatural(
+        readFileSync(manifest[0]?.path as string),
+      )
+      expect(regenerated.Modality).toBe('US')
+    } finally {
+      await rm(usDir, { recursive: true, force: true })
+      await rm(outDir, { recursive: true, force: true })
+    }
+  })
+
   it('produces a spec that re-validates', () => {
     const { spec } = describeDirectory(dir, { keepTags: ['Manufacturer'] })
     expect(() => validateDatasetSpec(spec)).not.toThrow()
+  })
+
+  it('round-trips a kept tag value containing braces verbatim', async () => {
+    const braceDir = await mkdtemp(join(tmpdir(), 'describe-brace-'))
+    const outDir = await mkdtemp(join(tmpdir(), 'describe-brace-out-'))
+    try {
+      // 'AC{{ME}}' generates a file whose Manufacturer is the literal 'AC{ME}'.
+      await writeCollectionFromSpec(
+        {
+          studies: [
+            {
+              series: [
+                {
+                  entries: [
+                    {
+                      type: 'valid-image',
+                      tags: { Manufacturer: 'AC{{ME}}' },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        braceDir,
+      )
+      const { spec } = describeDirectory(braceDir, {
+        keepTags: ['Manufacturer'],
+      })
+      // Re-validation must not choke on the literal braces.
+      expect(() => validateDatasetSpec(spec)).not.toThrow()
+      // Regenerating reproduces the literal value, not a substituted token.
+      const manifest = await writeCollectionFromSpec(spec, outDir)
+      const regenerated = parseNatural(
+        readFileSync(manifest[0]?.path as string),
+      )
+      expect(regenerated.Manufacturer).toBe('AC{ME}')
+    } finally {
+      await rm(braceDir, { recursive: true, force: true })
+      await rm(outDir, { recursive: true, force: true })
+    }
   })
 
   it('emits no modality and counts files with an unsupported Modality', async () => {
