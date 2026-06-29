@@ -18,19 +18,34 @@ import type {
   StudySpec,
 } from '../schema/types.js'
 import { validateDatasetSpec } from '../schema/validate.js'
+import { escapeTagTemplate } from '../syntheticFixtures/tagTemplate.js'
 
 const dcmjsAny = dcmjs as unknown as {
   data: {
     DicomMessage: { readFile: (ab: ArrayBuffer) => { dict: unknown } }
     DicomMetaDictionary: {
       naturalizeDataset: (ds: unknown) => Record<string, unknown>
-      nameMap?: Record<string, { tag?: string }>
+      nameMap?: Record<string, { tag?: string; vr?: string }>
     }
   }
 }
 
 const HEX_TAG_RE = /^[0-9a-fA-F]{8}$/
 const SUPPORTED_MODALITIES = new Set<Modality>(['CT', 'PT', 'MR', 'CR'])
+
+// Modality type-1 preset attributes — owned by the modality preset, so dropped
+// from any keep-list (reproduced from the captured `modality` field, not copied
+// verbatim). SOPClassUID / *UID tags are excluded via their UI VR below.
+// Modality itself is handled per-file in extractTags: reserved only when it is a
+// preset value (CT/PT/MR/CR), kept verbatim otherwise (US, NM, …) so non-preset
+// datasets round-trip.
+const RESERVED_KEEP_KEYWORDS = new Set([
+  'Units',
+  'DecayCorrection',
+  'CorrectedImage',
+  'ScanningSequence',
+  'SequenceVariant',
+])
 
 export type DescribeOptions = {
   // Allow-list of DICOM keyword names ("Manufacturer") or 8-hex tags
@@ -65,24 +80,43 @@ function buildHexToKeyword(): Map<string, string> {
 
 // Resolve keepTags entries to DICOM keyword names, mapping hex tags via dcmjs
 // and rejecting unknown tags (hex or keyword) so typos surface rather than
-// silently matching nothing.
+// silently matching nothing. Coupled (modality-preset) and UID-VR keywords are
+// dropped with a warning — the former is reproduced from the `modality` field,
+// the latter is handled by the (forthcoming) hash-derived UID path.
 function resolveKeepTags(keepTags: string[]): string[] {
   const nameMap = dcmjsAny.data.DicomMetaDictionary.nameMap
   let hexToKeyword: Map<string, string> | undefined
-  return keepTags.map((tag) => {
+  const kept: string[] = []
+  for (const tag of keepTags) {
+    let keyword: string
     if (HEX_TAG_RE.test(tag)) {
       hexToKeyword ??= buildHexToKeyword()
-      const keyword = hexToKeyword.get(tag.toUpperCase())
-      if (!keyword) {
+      const mapped = hexToKeyword.get(tag.toUpperCase())
+      if (!mapped) {
         throw new Error(`describe: unknown hex tag "${tag}"`)
       }
-      return keyword
+      keyword = mapped
+    } else {
+      if (nameMap && !Object.hasOwn(nameMap, tag)) {
+        throw new Error(`describe: unknown tag keyword "${tag}"`)
+      }
+      keyword = tag
     }
-    if (nameMap && !Object.hasOwn(nameMap, tag)) {
-      throw new Error(`describe: unknown tag keyword "${tag}"`)
+    if (RESERVED_KEEP_KEYWORDS.has(keyword)) {
+      console.warn(
+        `describe: ignoring keep-tag "${keyword}" — modality-coupled tags are reproduced from the modality field`,
+      )
+      continue
     }
-    return tag
-  })
+    if (nameMap?.[keyword]?.vr === 'UI') {
+      console.warn(
+        `describe: ignoring keep-tag "${keyword}" — UID-valued tags are not kept verbatim`,
+      )
+      continue
+    }
+    kept.push(keyword)
+  }
+  return kept
 }
 
 function* walkFiles(dir: string): Generator<string> {
@@ -186,10 +220,21 @@ function extractTags(
   let found = false
   for (const keyword of keepKeywords) {
     const value = record[keyword]
-    if (value !== undefined) {
-      tags[keyword] = value
-      found = true
+    if (value === undefined) continue
+    // A preset Modality is reproduced from the captured `modality` field, so it
+    // is not kept verbatim; a non-preset Modality (US, NM, …) has no field route
+    // and is kept so the dataset round-trips.
+    if (
+      keyword === 'Modality' &&
+      typeof value === 'string' &&
+      SUPPORTED_MODALITIES.has(value as Modality)
+    ) {
+      continue
     }
+    // Escape braces so a real value containing them is reproduced verbatim
+    // rather than being treated as a {placeholder} during regeneration.
+    tags[keyword] = typeof value === 'string' ? escapeTagTemplate(value) : value
+    found = true
   }
   return found ? tags : undefined
 }

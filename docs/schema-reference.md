@@ -246,10 +246,35 @@ Available on all image types.
 }
 ```
 
-Keys are either DICOM keyword names (PascalCase, e.g. `"Modality"`) or 8-hex-character tag strings (e.g. `"00080060"`). Unknown hex tags produce a console warning and are skipped.
+Keys are either DICOM keyword names (PascalCase, e.g. `"PatientID"`) or 8-hex-character tag strings (e.g. `"00080060"`). Unknown hex tags produce a console warning and are skipped.
+
+A **preset** modality (`CT`/`PT`/`MR`/`CR`) cannot be set through `tags` — it is coupled to `SOPClassUID` and the modality type-1 attributes, so it is set via the [`modality`](#modality-presets-modality) field instead, and supplying it in `tags` fails validation. Non-preset modalities (e.g. `US`, `NM`) have no preset, so `tags` stays their only route and is permitted.
 
 ```ts
 import type { DicomTagOverrides } from 'dicom-synth'
+```
+
+### Templated tag values
+
+String tag values may contain placeholder tokens, resolved per file at generation time from the file's position. The same template works on the schema, parametric, and describe paths, so the spec stores *shape*, not per-file values (entries still collapse — no spec bloat) and no real values are emitted.
+
+| Token | Resolves to |
+|---|---|
+| `{index}` | 0-based position across the whole dataset |
+| `{studyIndex}` | 0-based study position (grouped studies only) |
+| `{seriesIndex}` | 0-based series position within its study (grouped studies only) |
+| `{instanceNumber}` | 1-based `InstanceNumber` within its series (grouped studies only) |
+
+```json
+{ "type": "valid-image", "tags": { "PatientID": "P{studyIndex}-{instanceNumber}" } }
+```
+
+- A single-brace `{token}` is a placeholder; an unknown token name fails validation. For a **literal** brace, double it — `{{` → `{`, `}}` → `}` (e.g. `"T1 {{flair}}"` → `T1 {flair}`). describe escapes captured values this way, so real brace-containing values round-trip verbatim.
+- The three grouping tokens are only available inside `studies`; using one on a flat `entries` item throws at generation.
+- Non-string values (numbers, arrays) pass through untouched.
+
+```ts
+import { resolveTagTemplates, TEMPLATE_VOCAB, type TagContext } from 'dicom-synth'
 ```
 
 ## Transfer syntax (`transferSyntax`)

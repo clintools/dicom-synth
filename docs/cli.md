@@ -60,6 +60,9 @@ dicom-synth-describe ./real-dataset
 
 # Save to a file, and keep selected tags (caller owns any PHI in them)
 dicom-synth-describe ./real-dataset --out spec.json --keep-tags Manufacturer,00080060
+
+# Read the keep-list from a file (one tag per line, # comments)
+dicom-synth-describe ./real-dataset --keep-tags-file keep.txt
 ```
 
 | Flag | Effect |
@@ -67,8 +70,9 @@ dicom-synth-describe ./real-dataset --out spec.json --keep-tags Manufacturer,000
 | `<dir>` | DICOM tree to scan (required) |
 | `--out <path>` | Write the `DatasetSpec` JSON (default: stdout) |
 | `--keep-tags <a,b,...>` | Copy the named tags (keywords or 8-hex) verbatim; omit for shape only |
+| `--keep-tags-file <path>` | Same allow-list from a file (one tag per line, `#` comments); merged with `--keep-tags` |
 
-Scan stats (DICOM/skipped/unsupported-modality counts) are written to stderr. See the [describe tool](./describe.md) for behaviour details.
+Modality-coupled and UID-valued tags are dropped from the keep-list with a warning (see the [describe tool](./describe.md)). Scan stats (DICOM/skipped/unsupported-modality counts) are written to stderr.
 
 ## `dicom-synth-fetch`
 

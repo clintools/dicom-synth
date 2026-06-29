@@ -13,6 +13,10 @@ import type {
 } from '../schema/types.js'
 import { buildBufferForSpec } from '../syntheticFixtures/generator.js'
 import { streamLargeImage } from '../syntheticFixtures/streamWrite.js'
+import {
+  resolveTagTemplates,
+  type TagContext,
+} from '../syntheticFixtures/tagTemplate.js'
 import type { UidSet } from '../syntheticFixtures/uid.js'
 import {
   makeGroupUidGenerator,
@@ -88,13 +92,23 @@ export async function generateFile(
     seed?: number
     padWidth?: number
     uid?: Partial<UidSet>
+    // Resolves placeholder tokens in tag values; index defaults to options.index.
+    context?: Partial<TagContext>
   },
 ): Promise<GeneratedFile> {
   const index = options?.index ?? 0
   const padWidth = options?.padWidth ?? 3
   const uid = resolveUid(options?.seed, index, options?.uid)
 
-  let buffer = buildBufferForSpec(spec, uid)
+  const resolvedSpec =
+    'tags' in spec && spec.tags
+      ? {
+          ...spec,
+          tags: resolveTagTemplates(spec.tags, { index, ...options?.context }),
+        }
+      : spec
+
+  let buffer = buildBufferForSpec(resolvedSpec, uid)
 
   const violations = 'violations' in spec ? spec.violations : undefined
   if (violations?.length) {
@@ -206,6 +220,9 @@ type FilePlan = {
   fileSpec: FileSpec
   index: number
   uidOverride?: Partial<UidSet>
+  // Per-file context for resolving tag-value placeholders. Flat entries carry
+  // only index; grouped entries also carry study/series/instance positions.
+  context: TagContext
   filename: string
   relativePath: string
 }
@@ -254,6 +271,7 @@ function* planCollection(spec: DatasetSpec): Generator<FilePlan> {
       yield {
         fileSpec: fileSpec as FileSpec,
         index: globalIndex,
+        context: { index: globalIndex },
         ...computeNames(
           fileSpec.type,
           globalIndex,
@@ -289,6 +307,12 @@ function* planCollection(spec: DatasetSpec): Generator<FilePlan> {
               fileSpec: { ...fileSpec, tags } as FileSpec,
               index: globalIndex,
               uidOverride: { study: studyUid, series: seriesUid },
+              context: {
+                index: globalIndex,
+                studyIndex: studyOrdinal,
+                seriesIndex,
+                instanceNumber,
+              },
               ...computeNames(
                 fileSpec.type,
                 globalIndex,
@@ -316,6 +340,7 @@ async function materialisePlan(
     index: plan.index,
     seed,
     uid: plan.uidOverride,
+    context: plan.context,
   })
   return { ...file, filename: plan.filename, relativePath: plan.relativePath }
 }
@@ -401,7 +426,7 @@ export async function writeCollectionFromSpec(
         targetBytes: large.targetBytes,
         modality: large.modality,
         uid,
-        tags: large.tags,
+        tags: resolveTagTemplates(large.tags, plan.context),
       })
     } else {
       const file = await materialisePlan(plan, spec.seed)
