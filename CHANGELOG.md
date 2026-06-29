@@ -1,3 +1,11 @@
+# [1.10.0](https://github.com/clintools/dicom-synth/compare/v1.9.0...v1.10.0) (2026-06-29)
+
+
+### Features
+
+* add --keep-tags-file to read the describe keep-list from a file ([3d5d87a](https://github.com/clintools/dicom-synth/commit/3d5d87af79777388e72f982827bedae28838ecad))
+* templated tag values and Modality coupling guard across all paths ([256f0fd](https://github.com/clintools/dicom-synth/commit/256f0fd02ef1c54ac505bcd0524b1066f48aa038))
+
 # [1.9.0](https://github.com/clintools/dicom-synth/compare/v1.8.0...v1.9.0) (2026-06-24)
 
 
