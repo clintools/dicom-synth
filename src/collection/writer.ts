@@ -9,6 +9,7 @@ import type {
   EntrySpec,
   FileSpec,
   PathQuirk,
+  SeriesSpec,
   StudySpec,
 } from '../schema/types.js'
 import { buildBufferForSpec } from '../syntheticFixtures/generator.js'
@@ -59,14 +60,56 @@ function entryCount(entries: EntrySpec[]): number {
   return entries.reduce((sum, e) => sum + (e.count ?? 1), 0)
 }
 
+function seriesFileCount(series: SeriesSpec): number {
+  return series.instances
+    ? series.instances.count
+    : entryCount(series.entries ?? [])
+}
+
 function studyFileCount(studies: StudySpec[]): number {
   return studies.reduce(
     (sum, study) =>
       sum +
       (study.count ?? 1) *
-        study.series.reduce((s, series) => s + entryCount(series.entries), 0),
+        study.series.reduce((s, series) => s + seriesFileCount(series), 0),
     0,
   )
+}
+
+// Normalises a series (entries or instances form) into a flat, ordered sequence
+// of per-file specs. Instance position = emission order, so the instances-form
+// per-instance arrays index file i directly — preserving correlation.
+function* seriesFiles(
+  series: SeriesSpec,
+): Generator<{ baseSpec: FileSpec; instanceTags: DicomTagOverrides }> {
+  if (series.instances) {
+    const inst = series.instances
+    for (let i = 0; i < inst.count; i++) {
+      const modality = Array.isArray(inst.modality)
+        ? inst.modality[i]
+        : inst.modality
+      const baseSpec = {
+        ...(inst.targetBytes
+          ? { type: 'large-image', targetBytes: inst.targetBytes[i] }
+          : { type: 'valid-image', targetSizeKb: inst.targetSizeKb?.[i] }),
+        ...(modality !== undefined ? { modality } : {}),
+      } as FileSpec
+      const instanceTags: DicomTagOverrides = {}
+      if (inst.tags) {
+        for (const [key, values] of Object.entries(inst.tags)) {
+          instanceTags[key] = values[i]
+        }
+      }
+      yield { baseSpec, instanceTags }
+    }
+    return
+  }
+  for (const entry of series.entries ?? []) {
+    const { count = 1, tags, ...baseSpec } = entry
+    for (let i = 0; i < count; i++) {
+      yield { baseSpec: baseSpec as FileSpec, instanceTags: tags ?? {} }
+    }
+  }
 }
 
 // Resolves a file's UID set from (seed, index) with optional shared study/series
@@ -293,38 +336,35 @@ function* planCollection(spec: DatasetSpec): Generator<FilePlan> {
       for (const [seriesIndex, series] of study.series.entries()) {
         const seriesUid = groupUids.series(studyOrdinal, seriesIndex)
         let instanceNumber = 0
-        for (const entry of series.entries) {
-          const { count = 1, ...fileSpec } = entry
-          for (let i = 0; i < count; i++) {
-            instanceNumber++
-            const tags: DicomTagOverrides = {
-              InstanceNumber: instanceNumber,
-              ...study.tags,
-              ...series.tags,
-              ...fileSpec.tags,
-            }
-            yield {
-              fileSpec: { ...fileSpec, tags } as FileSpec,
-              index: globalIndex,
-              uidOverride: { study: studyUid, series: seriesUid },
-              context: {
-                index: globalIndex,
-                studyIndex: studyOrdinal,
-                seriesIndex,
-                instanceNumber,
-              },
-              ...computeNames(
-                fileSpec.type,
-                globalIndex,
-                padWidth,
-                hierarchical
-                  ? { studyOrdinal, seriesIndex, instanceNumber }
-                  : undefined,
-                quirks,
-              ),
-            }
-            globalIndex++
+        for (const { baseSpec, instanceTags } of seriesFiles(series)) {
+          instanceNumber++
+          const tags: DicomTagOverrides = {
+            InstanceNumber: instanceNumber,
+            ...study.tags,
+            ...series.tags,
+            ...instanceTags,
           }
+          yield {
+            fileSpec: { ...baseSpec, tags } as FileSpec,
+            index: globalIndex,
+            uidOverride: { study: studyUid, series: seriesUid },
+            context: {
+              index: globalIndex,
+              studyIndex: studyOrdinal,
+              seriesIndex,
+              instanceNumber,
+            },
+            ...computeNames(
+              baseSpec.type,
+              globalIndex,
+              padWidth,
+              hierarchical
+                ? { studyOrdinal, seriesIndex, instanceNumber }
+                : undefined,
+              quirks,
+            ),
+          }
+          globalIndex++
         }
       }
       studyOrdinal++

@@ -266,31 +266,121 @@ const MODALITY_TAG = '00080060'
 // Non-preset modalities (e.g. US, NM) have no preset, so tags stays their only
 // route and is allowed. Only validateDatasetSpec enforces this; the low-level
 // generateFile primitive trusts its input.
+// A single tag value (scalar, or one element of a per-instance array).
+function validateTagValue(key: string, value: unknown, path: string): void {
+  const isModalityKey = key === 'Modality' || key.toUpperCase() === MODALITY_TAG
+  if (
+    isModalityKey &&
+    typeof value === 'string' &&
+    Object.hasOwn(VALID_MODALITIES, value)
+  ) {
+    throw new Error(
+      `${path}.${key}: set a preset modality (${Object.keys(VALID_MODALITIES).join('/')}) via the "modality" field, not tags — it is coupled to SOPClassUID and type-1 attributes`,
+    )
+  }
+  if (typeof value === 'string') {
+    for (const name of findTemplateTokens(value)) {
+      if (!(TEMPLATE_VOCAB as readonly string[]).includes(name)) {
+        throw new Error(
+          `${path}.${key}: unknown placeholder "{${name}}" — allowed: ${TEMPLATE_VOCAB.map((v) => `{${v}}`).join(', ')}`,
+        )
+      }
+    }
+  }
+}
+
 function validateTags(tags: unknown, path: string): void {
   if (typeof tags !== 'object' || tags === null || Array.isArray(tags)) {
     throw new Error(`${path}: must be an object`)
   }
   for (const [key, value] of Object.entries(tags as object)) {
     validateTagKey(key, path)
-    const isModalityKey =
-      key === 'Modality' || key.toUpperCase() === MODALITY_TAG
-    if (
-      isModalityKey &&
-      typeof value === 'string' &&
-      Object.hasOwn(VALID_MODALITIES, value)
-    ) {
-      throw new Error(
-        `${path}.${key}: set a preset modality (${Object.keys(VALID_MODALITIES).join('/')}) via the "modality" field, not tags — it is coupled to SOPClassUID and type-1 attributes`,
+    validateTagValue(key, value, path)
+  }
+}
+
+function validateArrayOfLength(
+  value: unknown,
+  count: number,
+  path: string,
+): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${path}: must be an array`)
+  }
+  if (value.length !== count) {
+    throw new Error(
+      `${path}: length (${value.length}) must equal count (${count})`,
+    )
+  }
+  return value
+}
+
+// Flywheel array form: parallel per-instance arrays, each of length `count`.
+function validateInstances(instances: unknown, path: string): void {
+  if (
+    typeof instances !== 'object' ||
+    instances === null ||
+    Array.isArray(instances)
+  ) {
+    throw new Error(`${path}: must be an object`)
+  }
+  const inst = instances as Record<string, unknown>
+
+  validatePositiveInt(inst.count, `${path}.count`)
+  const count = inst.count as number
+
+  const hasKb = 'targetSizeKb' in inst
+  const hasBytes = 'targetBytes' in inst
+  if (hasKb === hasBytes) {
+    throw new Error(
+      `${path}: exactly one of "targetSizeKb" or "targetBytes" is required`,
+    )
+  }
+  if (hasKb) {
+    const sizes = validateArrayOfLength(
+      inst.targetSizeKb,
+      count,
+      `${path}.targetSizeKb`,
+    )
+    sizes.forEach((kb, i) => {
+      validatePositiveInt(kb, `${path}.targetSizeKb[${i}]`)
+      validateSizeKbLimit(kb as number, `${path}.targetSizeKb[${i}]`)
+    })
+  } else {
+    const sizes = validateArrayOfLength(
+      inst.targetBytes,
+      count,
+      `${path}.targetBytes`,
+    )
+    sizes.forEach((b, i) => {
+      validateLargeTargetBytes(b, `${path}.targetBytes[${i}]`)
+    })
+  }
+
+  if ('modality' in inst) {
+    if (Array.isArray(inst.modality)) {
+      validateArrayOfLength(inst.modality, count, `${path}.modality`).forEach(
+        (m, i) => {
+          validateEnum(m, VALID_MODALITIES, `${path}.modality[${i}]`)
+        },
       )
+    } else {
+      validateEnum(inst.modality, VALID_MODALITIES, `${path}.modality`)
     }
-    if (typeof value === 'string') {
-      for (const name of findTemplateTokens(value)) {
-        if (!(TEMPLATE_VOCAB as readonly string[]).includes(name)) {
-          throw new Error(
-            `${path}.${key}: unknown placeholder "{${name}}" — allowed: ${TEMPLATE_VOCAB.map((v) => `{${v}}`).join(', ')}`,
-          )
-        }
-      }
+  }
+
+  if ('tags' in inst) {
+    const tags = inst.tags
+    if (typeof tags !== 'object' || tags === null || Array.isArray(tags)) {
+      throw new Error(`${path}.tags: must be an object`)
+    }
+    for (const [key, arr] of Object.entries(tags as object)) {
+      validateTagKey(key, `${path}.tags`)
+      validateArrayOfLength(arr, count, `${path}.tags.${key}`).forEach(
+        (value, i) => {
+          validateTagValue(key, value, `${path}.tags[${i}]`)
+        },
+      )
     }
   }
 }
@@ -302,18 +392,29 @@ function validateSeries(series: unknown, path: string): SeriesSpec {
 
   const s = series as Record<string, unknown>
 
-  if (!Array.isArray(s.entries) || s.entries.length === 0) {
-    throw new Error(`${path}.entries: must be a non-empty array`)
+  const hasEntries = 'entries' in s
+  const hasInstances = 'instances' in s
+  if (hasEntries === hasInstances) {
+    throw new Error(
+      `${path}: must have exactly one of "entries" or "instances"`,
+    )
   }
 
-  for (let i = 0; i < s.entries.length; i++) {
-    const e = validateEntry(s.entries[i], `${path}.entries[${i}]`)
-    // Only image-generating types can be grouped (mirrors SeriesEntrySpec).
-    if (!TYPE_CAPABILITIES[e.type].image) {
-      throw new Error(
-        `${path}.entries[${i}].type: "${e.type}" cannot be used inside a series — only image-generating types can be grouped`,
-      )
+  if (hasEntries) {
+    if (!Array.isArray(s.entries) || s.entries.length === 0) {
+      throw new Error(`${path}.entries: must be a non-empty array`)
     }
+    for (let i = 0; i < s.entries.length; i++) {
+      const e = validateEntry(s.entries[i], `${path}.entries[${i}]`)
+      // Only image-generating types can be grouped (mirrors SeriesEntrySpec).
+      if (!TYPE_CAPABILITIES[e.type].image) {
+        throw new Error(
+          `${path}.entries[${i}].type: "${e.type}" cannot be used inside a series — only image-generating types can be grouped`,
+        )
+      }
+    }
+  } else {
+    validateInstances(s.instances, `${path}.instances`)
   }
 
   if ('tags' in s) validateTags(s.tags, `${path}.tags`)

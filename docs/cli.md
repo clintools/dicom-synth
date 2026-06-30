@@ -63,14 +63,19 @@ dicom-synth-describe ./real-dataset --out spec.json --keep-tags Manufacturer,000
 
 # Read the keep-list from a file (one tag per line, # comments)
 dicom-synth-describe ./real-dataset --keep-tags-file keep.txt
+
+# Fold near-identical sizes (±5%) and write a gzip-compressed spec
+dicom-synth-describe ./real-dataset --size-tolerance 0.05 --out spec.json.gz
 ```
 
 | Flag | Effect |
 |---|---|
 | `<dir>` | DICOM tree to scan (required) |
-| `--out <path>` | Write the `DatasetSpec` JSON (default: stdout) |
+| `--out <path>` | Write the `DatasetSpec` JSON (default: stdout); a `.gz` suffix gzips it |
 | `--keep-tags <a,b,...>` | Copy the named tags (keywords or 8-hex) verbatim; omit for shape only |
 | `--keep-tags-file <path>` | Same allow-list from a file (one tag per line, `#` comments); merged with `--keep-tags` |
+| `--size-tolerance <fraction>` | Fold near-identical file sizes (e.g. `0.05` = ±5%) into one entry; default exact. Normal images only — large files keep exact `targetBytes` |
+| `--gzip` | Write the spec gzip-compressed (also inferred from a `.gz` `--out` suffix) |
 
 Modality-coupled and UID-valued tags are dropped from the keep-list with a warning (see the [describe tool](./describe.md)). Scan stats (DICOM/skipped/unsupported-modality counts) are written to stderr.
 

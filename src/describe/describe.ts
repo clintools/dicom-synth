@@ -14,6 +14,7 @@ import type {
   DicomTagOverrides,
   Modality,
   SeriesEntrySpec,
+  SeriesInstances,
   SeriesSpec,
   StudySpec,
 } from '../schema/types.js'
@@ -54,6 +55,11 @@ export type DescribeOptions = {
   // found — if a kept tag contains PHI, handling that PHI is the caller's
   // responsibility, not this tool's.
   keepTags?: string[]
+  // Relative size tolerance (fraction, e.g. 0.05 = ±5%) for collapsing
+  // near-identical files: sizes within a bucket fold into one entry/value,
+  // trading exact byte fidelity for a smaller spec. Default 0 = exact sizes.
+  // Applied to normal images only; large files keep their exact targetBytes.
+  sizeTolerance?: number
 }
 
 export type DescribeResult = {
@@ -239,8 +245,16 @@ function extractTags(
   return found ? tags : undefined
 }
 
-// Files above the in-memory cap become disk-only large-image entries (sized by
-// targetBytes); others use targetSizeKb. Both derive from the raw file size.
+// One scanned file: kind, raw byte size, modality (supported presets only), and
+// any kept tags. Records stay in instance (sorted-path) order so the emit step
+// can choose the compact entries form or the Flywheel instances form per series.
+type FileRecord = {
+  large: boolean
+  bytes: number
+  modality?: Modality
+  tags?: DicomTagOverrides
+}
+
 type EntryAccum = {
   modality?: Modality
   large: boolean
@@ -249,9 +263,158 @@ type EntryAccum = {
   count: number
 }
 
-// Insertion-ordered maps — collapseKey → entry, seriesUid → series, studyUid → study.
-type SeriesAccum = Map<string, EntryAccum>
+// Per series we hold EITHER an incremental collapse map (when no tags are kept —
+// the instances form can never trigger, so files collapse on the fly and memory
+// stays bounded by distinct entries) OR an ordered record list (when tags are
+// kept, needed to detect per-instance variation and build the arrays).
+type SeriesAccum = Map<string, EntryAccum> | FileRecord[]
 type StudyAccum = Map<string, SeriesAccum>
+
+function sizeKbOf(bytes: number): number {
+  return Math.max(1, Math.round(bytes / 1024))
+}
+
+// Rounds a byte count to the geometric midpoint of its relative bucket, so two
+// sizes within ~tolerance land on the same representative and collapse. A
+// tolerance of 0 (or a sub-byte input) is a no-op.
+function bucketBytes(bytes: number, tolerance: number): number {
+  if (tolerance <= 0 || bytes < 1) return bytes
+  const factor = 1 + tolerance
+  const bucket = Math.floor(Math.log(bytes) / Math.log(factor))
+  return Math.max(1, Math.round(factor ** (bucket + 0.5)))
+}
+
+// Collapse key: files merge into one counted entry when kind, modality, size,
+// and kept tags all match.
+function collapseKeyOf(r: FileRecord): string {
+  return JSON.stringify([
+    r.large,
+    r.modality ?? null,
+    r.large ? r.bytes : sizeKbOf(r.bytes),
+    r.tags ?? null,
+  ])
+}
+
+function accumulate(byKey: Map<string, EntryAccum>, r: FileRecord): void {
+  const key = collapseKeyOf(r)
+  const existing = byKey.get(key)
+  if (existing) {
+    existing.count++
+  } else {
+    byKey.set(key, {
+      modality: r.modality,
+      large: r.large,
+      bytes: r.bytes,
+      tags: r.tags,
+      count: 1,
+    })
+  }
+}
+
+// Files above the in-memory cap become disk-only large-image entries (sized by
+// targetBytes); others use targetSizeKb. Both derive from the raw byte size.
+function entryOf(acc: EntryAccum): SeriesEntrySpec {
+  return {
+    ...(acc.modality !== undefined ? { modality: acc.modality } : {}),
+    ...(acc.large
+      ? { type: 'large-image' as const, targetBytes: acc.bytes }
+      : { type: 'valid-image' as const, targetSizeKb: sizeKbOf(acc.bytes) }),
+    ...(acc.tags !== undefined ? { tags: acc.tags } : {}),
+    ...(acc.count > 1 ? { count: acc.count } : {}),
+  }
+}
+
+// Compact entries form built from an ordered record list; insertion order kept.
+function collapseEntries(records: FileRecord[]): SeriesEntrySpec[] {
+  const byKey = new Map<string, EntryAccum>()
+  for (const r of records) accumulate(byKey, r)
+  return [...byKey.values()].map(entryOf)
+}
+
+// Cheap value equality for kept tags: scalars (the common case) compare with
+// ===; only non-null objects/arrays (e.g. multi-valued or sequence tags) need
+// the costlier structural compare. Exported for unit testing.
+export function tagValuesEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (
+    typeof a === 'object' &&
+    a !== null &&
+    typeof b === 'object' &&
+    b !== null
+  )
+    return JSON.stringify(a) === JSON.stringify(b)
+  return false
+}
+
+// Flywheel form: used only when a kept tag genuinely varies across the series
+// AND the series is otherwise uniform enough to express as parallel arrays
+// (single kind, single modality, every kept tag present in every file).
+// Constant tags hoist to series.tags; varying tags become per-instance arrays
+// indexed by file position — preserving cross-tag correlation. Returns null to
+// fall back to the entries form.
+function tryInstancesForm(records: FileRecord[]): SeriesSpec | null {
+  const count = records.length
+  if (count === 0) return null
+  const large = records[0]?.large ?? false
+  const modality = records[0]?.modality
+
+  // Single pass: gather each kept tag's values by file position, count its
+  // presence, and bail early if the series is not one kind / one modality.
+  const columns = new Map<string, { values: unknown[]; present: number }>()
+  for (let i = 0; i < count; i++) {
+    const r = records[i] as FileRecord
+    if (r.large !== large || r.modality !== modality) return null
+    if (!r.tags) continue
+    for (const [k, v] of Object.entries(r.tags)) {
+      let col = columns.get(k)
+      if (!col) {
+        col = { values: new Array(count), present: 0 }
+        columns.set(k, col)
+      }
+      col.values[i] = v
+      col.present++
+    }
+  }
+  if (columns.size === 0) return null
+
+  const sharedTags: DicomTagOverrides = {}
+  const perInstanceTags: Record<string, unknown[]> = {}
+  for (const [k, col] of columns) {
+    // A tag absent in some files (mixed presence) can't be a clean array.
+    if (col.present !== count) return null
+    const first = col.values[0]
+    if (col.values.every((v) => tagValuesEqual(v, first))) {
+      sharedTags[k] = first
+    } else {
+      perInstanceTags[k] = col.values
+    }
+  }
+  if (Object.keys(perInstanceTags).length === 0) return null // nothing varies
+
+  const instances: SeriesInstances = {
+    count,
+    ...(large
+      ? { targetBytes: records.map((r) => r.bytes) }
+      : { targetSizeKb: records.map((r) => sizeKbOf(r.bytes)) }),
+    ...(modality !== undefined ? { modality } : {}),
+    // perInstanceTags is non-empty here (we returned null above otherwise).
+    tags: perInstanceTags,
+  }
+  return {
+    instances,
+    ...(Object.keys(sharedTags).length ? { tags: sharedTags } : {}),
+  }
+}
+
+function buildSeriesSpec(records: FileRecord[]): SeriesSpec {
+  return tryInstancesForm(records) ?? { entries: collapseEntries(records) }
+}
+
+function seriesSpecFromAccum(accum: SeriesAccum): SeriesSpec {
+  return Array.isArray(accum)
+    ? buildSeriesSpec(accum)
+    : { entries: [...accum.values()].map(entryOf) }
+}
 
 // Scans a DICOM directory tree and emits a concrete DatasetSpec describing its
 // shape: studies/series grouped by their UIDs, per-file size as targetSizeKb,
@@ -261,6 +424,16 @@ export function describeDirectory(
   options: DescribeOptions = {},
 ): DescribeResult {
   const keepKeywords = options.keepTags ? resolveKeepTags(options.keepTags) : []
+  // With kept tags we retain per-file records (to build the instances form);
+  // without, collapse on the fly (see SeriesAccum).
+  const keepTags = keepKeywords.length > 0
+
+  const tolerance = options.sizeTolerance ?? 0
+  if (!Number.isFinite(tolerance) || tolerance < 0) {
+    throw new Error(
+      `describe: sizeTolerance must be a non-negative fraction; got ${JSON.stringify(options.sizeTolerance)}`,
+    )
+  }
 
   const studies = new Map<string, StudyAccum>()
   const stats = { dicomFiles: 0, skipped: 0, unknownModality: 0 }
@@ -305,10 +478,15 @@ export function describeDirectory(
       }
     }
 
-    const sizeKb = Math.max(1, Math.round(size / 1024))
-    const tags = keepKeywords.length
-      ? extractTags(record, keepKeywords)
-      : undefined
+    const tags = keepTags ? extractTags(record, keepKeywords) : undefined
+    // Large files keep exact targetBytes; normal images bucket by tolerance,
+    // clamped to the 512 MB cap so a near-cap file's bucket can't round over it
+    // (which would fail validation). Over-cap buckets all clamp to the cap, so
+    // they still collapse together.
+    const bytes = large
+      ? size
+      : Math.min(bucketBytes(size, tolerance), MAX_PIXEL_BYTES)
+    const fileRecord: FileRecord = { large, bytes, modality, tags }
 
     let study = studies.get(studyUid)
     if (!study) {
@@ -317,43 +495,19 @@ export function describeDirectory(
     }
     let series = study.get(seriesUid)
     if (!series) {
-      series = new Map()
+      series = keepTags ? [] : new Map<string, EntryAccum>()
       study.set(seriesUid, series)
     }
-
-    // Collapse files into one counted entry only when kind, modality, size, and
-    // kept tags all match — so tag/size variation within a series is preserved.
-    const collapseKey = JSON.stringify([
-      large,
-      modality ?? null,
-      large ? size : sizeKb,
-      tags ?? null,
-    ])
-    const existing = series.get(collapseKey)
-    if (existing) {
-      existing.count++
+    if (Array.isArray(series)) {
+      series.push(fileRecord)
     } else {
-      series.set(collapseKey, { modality, large, bytes: size, tags, count: 1 })
+      accumulate(series, fileRecord)
     }
   }
 
-  const studySpecs: StudySpec[] = [...studies.values()].map((study) => {
-    const seriesSpecs: SeriesSpec[] = [...study.values()].map((series) => {
-      const entries: SeriesEntrySpec[] = [...series.values()].map((acc) => ({
-        ...(acc.modality !== undefined ? { modality: acc.modality } : {}),
-        ...(acc.large
-          ? { type: 'large-image' as const, targetBytes: acc.bytes }
-          : {
-              type: 'valid-image' as const,
-              targetSizeKb: Math.max(1, Math.round(acc.bytes / 1024)),
-            }),
-        ...(acc.tags !== undefined ? { tags: acc.tags } : {}),
-        ...(acc.count > 1 ? { count: acc.count } : {}),
-      }))
-      return { entries }
-    })
-    return { series: seriesSpecs }
-  })
+  const studySpecs: StudySpec[] = [...studies.values()].map((study) => ({
+    series: [...study.values()].map(seriesSpecFromAccum),
+  }))
 
   if (studySpecs.length === 0) {
     throw new Error(`describe: no DICOM series found in ${dir}`)

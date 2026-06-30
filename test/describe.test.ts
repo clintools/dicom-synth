@@ -11,7 +11,7 @@ import { parseNatural } from './helpers/dicom'
 
 const allEntries = (spec: DatasetSpec): SeriesEntrySpec[] =>
   (spec.studies ?? []).flatMap((s) =>
-    s.series.flatMap((series) => series.entries),
+    s.series.flatMap((series) => series.entries ?? []),
   )
 
 // A two-study tree: study 1 has a CT series (3 files) and a PT series (2),
@@ -73,7 +73,7 @@ describe('describeDirectory', () => {
     const fileCount = (s: NonNullable<DatasetSpec['studies']>[number]) =>
       s.series.reduce(
         (sum, series) =>
-          sum + series.entries.reduce((n, e) => n + (e.count ?? 1), 0),
+          sum + (series.entries ?? []).reduce((n, e) => n + (e.count ?? 1), 0),
         0,
       )
     const counts = (spec.studies ?? []).map(fileCount).sort()
@@ -173,6 +173,210 @@ describe('describeDirectory', () => {
   it('produces a spec that re-validates', () => {
     const { spec } = describeDirectory(dir, { keepTags: ['Manufacturer'] })
     expect(() => validateDatasetSpec(spec)).not.toThrow()
+  })
+
+  it('captures a varying kept tag as a correlated instances form', async () => {
+    const srcDir = await mkdtemp(join(tmpdir(), 'describe-inst-'))
+    const outDir = await mkdtemp(join(tmpdir(), 'describe-inst-out-'))
+    try {
+      // Source series where PatientID varies per file.
+      await writeCollectionFromSpec(
+        {
+          seed: 5,
+          layout: 'hierarchical',
+          studies: [
+            {
+              series: [
+                {
+                  instances: {
+                    count: 3,
+                    targetSizeKb: [10, 20, 30],
+                    tags: { PatientID: ['A', 'B', 'C'] },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        srcDir,
+      )
+      const { spec } = describeDirectory(srcDir, { keepTags: ['PatientID'] })
+      const series = spec.studies?.[0]?.series[0]
+      // Varying tag → instances form (not entries).
+      expect(series?.entries).toBeUndefined()
+      expect(series?.instances?.tags?.PatientID).toEqual(['A', 'B', 'C'])
+      expect(() => validateDatasetSpec(spec)).not.toThrow()
+      // Round-trip preserves each file's value in order.
+      const manifest = await writeCollectionFromSpec(spec, outDir)
+      const ids = manifest.map(
+        (m) => parseNatural(readFileSync(m.path)).PatientID,
+      )
+      expect(ids).toEqual(['A', 'B', 'C'])
+    } finally {
+      await rm(srcDir, { recursive: true, force: true })
+      await rm(outDir, { recursive: true, force: true })
+    }
+  })
+
+  it('hoists a constant tag to series.tags and arrays only the varying one', async () => {
+    const srcDir = await mkdtemp(join(tmpdir(), 'describe-part-'))
+    try {
+      await writeCollectionFromSpec(
+        {
+          seed: 6,
+          layout: 'hierarchical',
+          studies: [
+            {
+              series: [
+                {
+                  // ImageType (array) is constant across the series; PatientID varies.
+                  tags: { ImageType: ['ORIGINAL', 'PRIMARY'] },
+                  instances: {
+                    count: 3,
+                    targetSizeKb: [10, 10, 10],
+                    tags: { PatientID: ['A', 'B', 'C'] },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        srcDir,
+      )
+      const { spec } = describeDirectory(srcDir, {
+        keepTags: ['PatientID', 'ImageType'],
+      })
+      const series = spec.studies?.[0]?.series[0]
+      // Varying scalar → per-instance array; constant tag → shared (hoisted to
+      // series.tags, not duplicated per instance).
+      expect(series?.instances?.tags?.PatientID).toEqual(['A', 'B', 'C'])
+      expect(series?.instances?.tags?.ImageType).toBeUndefined()
+      expect(series?.tags?.ImageType).toBeDefined()
+      expect(() => validateDatasetSpec(spec)).not.toThrow()
+    } finally {
+      await rm(srcDir, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to entries form when a kept tag is present in only some files', async () => {
+    const srcDir = await mkdtemp(join(tmpdir(), 'describe-mixed-'))
+    try {
+      await writeCollectionFromSpec(
+        {
+          studies: [
+            {
+              series: [
+                {
+                  // Manufacturer is set on one file only (it is not a generator default).
+                  entries: [
+                    { type: 'valid-image', tags: { Manufacturer: 'ACME' } },
+                    { type: 'valid-image' },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        srcDir,
+      )
+      const { spec } = describeDirectory(srcDir, { keepTags: ['Manufacturer'] })
+      const series = spec.studies?.[0]?.series[0]
+      expect(series?.instances).toBeUndefined()
+      expect(series?.entries).toBeDefined()
+    } finally {
+      await rm(srcDir, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to entries form when modality varies within a series', async () => {
+    const srcDir = await mkdtemp(join(tmpdir(), 'describe-multimod-'))
+    try {
+      await writeCollectionFromSpec(
+        {
+          studies: [
+            {
+              series: [
+                {
+                  // Same series, differing modality, with a varying kept tag.
+                  entries: [
+                    {
+                      type: 'valid-image',
+                      modality: 'CT',
+                      tags: { Manufacturer: 'A' },
+                    },
+                    {
+                      type: 'valid-image',
+                      modality: 'PT',
+                      tags: { Manufacturer: 'B' },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        srcDir,
+      )
+      const { spec } = describeDirectory(srcDir, { keepTags: ['Manufacturer'] })
+      const series = spec.studies?.[0]?.series[0]
+      expect(series?.instances).toBeUndefined()
+      expect(series?.entries).toBeDefined()
+    } finally {
+      await rm(srcDir, { recursive: true, force: true })
+    }
+  })
+
+  it('folds near-identical sizes with sizeTolerance', async () => {
+    const sizeDir = await mkdtemp(join(tmpdir(), 'describe-tol-'))
+    try {
+      // One series, three slices ~1 KB apart (within ~2%).
+      await writeCollectionFromSpec(
+        {
+          seed: 4,
+          studies: [
+            {
+              series: [
+                {
+                  entries: [
+                    { type: 'valid-image', targetSizeKb: 100 },
+                    { type: 'valid-image', targetSizeKb: 101 },
+                    { type: 'valid-image', targetSizeKb: 102 },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        sizeDir,
+      )
+      // Exact (default) keeps the three distinct sizes as separate entries.
+      const exact = allEntries(describeDirectory(sizeDir).spec)
+      expect(exact.length).toBeGreaterThan(1)
+      // A 10% tolerance folds them into one counted entry.
+      const folded = allEntries(
+        describeDirectory(sizeDir, { sizeTolerance: 0.1 }).spec,
+      )
+      expect(folded).toHaveLength(1)
+      expect(folded[0]?.count).toBe(3)
+    } finally {
+      await rm(sizeDir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a negative sizeTolerance', () => {
+    expect(() => describeDirectory(dir, { sizeTolerance: -1 })).toThrow(
+      /sizeTolerance/,
+    )
+  })
+
+  it('keeps a constant kept tag in the compact entries form', () => {
+    // study 2's single CT file has Manufacturer 'ACME' (constant) — entries form.
+    const { spec } = describeDirectory(dir, { keepTags: ['Manufacturer'] })
+    for (const s of spec.studies ?? []) {
+      for (const series of s.series) {
+        expect(series.instances).toBeUndefined()
+      }
+    }
   })
 
   it('round-trips a kept tag value containing braces verbatim', async () => {
