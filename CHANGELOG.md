@@ -1,3 +1,10 @@
+# [1.11.0](https://github.com/clintools/dicom-synth/compare/v1.10.0...v1.11.0) (2026-06-30)
+
+
+### Features
+
+* per-instance tag grouping, size-collapse tolerance, and gzip for describe ([7643b81](https://github.com/clintools/dicom-synth/commit/7643b81a43fbe49b9a7825df15563a16d32d95e6))
+
 # [1.10.0](https://github.com/clintools/dicom-synth/compare/v1.9.0...v1.10.0) (2026-06-29)
 
 
