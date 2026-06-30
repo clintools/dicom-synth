@@ -79,8 +79,26 @@ export type EntrySpec = FileSpec & { count?: number }
 // large-image members are written disk-only via the streaming writer.
 export type SeriesEntrySpec = (ImageSpec | LargeFileSpec) & { count?: number }
 
+// Flywheel-style per-instance capture: constant tags stay on `SeriesSpec.tags`
+// (stored once); whatever varies per file is a parallel array indexed by
+// instance position, so file i's full record is shared tags + each array's i-th
+// value — correlation preserved by construction, without one entry per file.
+// Used as an alternative to `entries` (exactly one of the two per series).
+export type SeriesInstances = {
+  count: number
+  // Per-instance size — exactly one of these, each of length `count`.
+  targetSizeKb?: number[]
+  targetBytes?: number[]
+  // Scalar when the series is one modality (the norm); array (length `count`)
+  // only if it varies.
+  modality?: Modality | Modality[]
+  // Varying tags: keyword → values, each array of length `count`.
+  tags?: Record<string, unknown[]>
+}
+
 export type SeriesSpec = {
-  entries: SeriesEntrySpec[]
+  entries?: SeriesEntrySpec[]
+  instances?: SeriesInstances
   tags?: DicomTagOverrides
 }
 

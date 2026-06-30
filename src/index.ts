@@ -50,6 +50,7 @@ export type {
   PathQuirk,
   Range,
   SeriesEntrySpec,
+  SeriesInstances,
   SeriesSpec,
   StudySpec,
   TransferSyntax,

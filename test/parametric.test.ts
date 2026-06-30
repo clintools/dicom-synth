@@ -59,7 +59,7 @@ describe('resolveParametricSpec — structure', () => {
     for (const study of resolved.studies ?? []) {
       expect(study.series).toHaveLength(3)
       for (const series of study.series) {
-        expect(seriesFileCount(series.entries)).toBe(4)
+        expect(seriesFileCount(series.entries ?? [])).toBe(4)
       }
     }
   })
@@ -81,7 +81,7 @@ describe('resolveParametricSpec — structure', () => {
         expect(study.series.length).toBeGreaterThanOrEqual(1)
         expect(study.series.length).toBeLessThanOrEqual(3)
         for (const series of study.series) {
-          const files = seriesFileCount(series.entries)
+          const files = seriesFileCount(series.entries ?? [])
           expect(files).toBeGreaterThanOrEqual(4)
           expect(files).toBeLessThanOrEqual(9)
         }
@@ -102,7 +102,7 @@ describe('resolveParametricSpec — structure', () => {
     const drawn = new Set<string>()
     for (const study of resolved.studies ?? []) {
       for (const series of study.series) {
-        for (const entry of series.entries) {
+        for (const entry of series.entries ?? []) {
           expect(['PT', 'MR']).toContain(entry.modality)
           drawn.add(entry.modality as string)
         }
@@ -113,7 +113,7 @@ describe('resolveParametricSpec — structure', () => {
 
   it('omits modality when modalities is not provided', () => {
     const resolved = resolveParametricSpec(fixedSpec)
-    const entry = resolved.studies?.[0]?.series[0]?.entries[0]
+    const entry = resolved.studies?.[0]?.series[0]?.entries?.[0]
     expect(entry).not.toHaveProperty('modality')
   })
 
@@ -130,7 +130,7 @@ describe('resolveParametricSpec — structure', () => {
     for (const study of resolved.studies ?? []) {
       for (const series of study.series) {
         expect(series.entries).toHaveLength(5)
-        for (const entry of series.entries) {
+        for (const entry of series.entries ?? []) {
           if (entry.type === 'large-image') continue
           expect(entry.targetSizeKb).toBeGreaterThanOrEqual(100)
           expect(entry.targetSizeKb).toBeLessThanOrEqual(300)
@@ -386,7 +386,7 @@ describe('resolveParametricSpec — large files', () => {
 
   const allEntries = (spec: ReturnType<typeof resolveParametricSpec>) =>
     (spec.studies ?? []).flatMap((s) =>
-      s.series.flatMap((series) => series.entries),
+      s.series.flatMap((series) => series.entries ?? []),
     )
 
   it('adds a large-image member per series, sharing the modality', () => {

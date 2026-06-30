@@ -195,6 +195,33 @@ Group files so they share `StudyInstanceUID` (per study) and `SeriesInstanceUID`
 import type { StudySpec, SeriesSpec, SeriesEntrySpec } from 'dicom-synth'
 ```
 
+### Per-instance form (`instances`)
+
+A series carries **exactly one** of `entries` or `instances`. The `instances` form expresses per-file variation as **parallel arrays indexed by instance position**, so file *i* takes the *i*-th element of every array — keeping varying tags correlated with each other and with size, without one entry per file. Constant tags stay on `series.tags` (stored once); only what varies becomes an array. This is what [`describe`](./describe.md) emits when a kept tag varies across a series.
+
+```json
+{
+  "studies": [{
+    "series": [{
+      "tags": { "Manufacturer": "ACME" },
+      "instances": {
+        "count": 3,
+        "targetSizeKb": [10, 20, 30],
+        "tags": { "PatientID": ["P-A", "P-B", "P-C"] }
+      }
+    }]
+  }]
+}
+```
+
+- Exactly one of `targetSizeKb` / `targetBytes`; each present array has length `count`.
+- `modality` is scalar when the series is one modality (the norm), or a length-`count` array if it varies.
+- Each `tags` value is a length-`count` array; file *i* gets element *i*. Shared tags belong on `series.tags`, not here.
+
+```ts
+import type { SeriesInstances } from 'dicom-synth'
+```
+
 ## Layout (`layout`)
 
 | Value | Effect |
