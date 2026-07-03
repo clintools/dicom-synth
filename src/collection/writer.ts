@@ -22,6 +22,7 @@ import type { UidSet } from '../syntheticFixtures/uid.js'
 import {
   makeGroupUidGenerator,
   makeUidGenerator,
+  seedToSalt,
 } from '../syntheticFixtures/uid.js'
 import { applyViolations } from '../syntheticFixtures/violations.js'
 
@@ -112,19 +113,29 @@ function* seriesFiles(
   }
 }
 
-// Resolves a file's UID set from (seed, index) with optional shared study/series
+// Resolves a file's UID set from (salt, index) with optional shared study/series
 // overrides — the single seam used by both the in-memory and streaming paths.
 function resolveUid(
-  seed: number | undefined,
+  salt: string | undefined,
   index: number,
   override?: Partial<UidSet>,
 ): UidSet {
-  return { ...makeUidGenerator(seed)(index), ...override }
+  return { ...makeUidGenerator(salt)(index), ...override }
+}
+
+// The UID namespace for a spec: an explicit uidSalt, else derived from the seed
+// (preserving seed-based reproducibility), else undefined (→ random UIDs).
+function effectiveSalt(spec: {
+  uidSalt?: string
+  seed?: number
+}): string | undefined {
+  return spec.uidSalt ?? seedToSalt(spec.seed)
 }
 
 // Layer 1 — single file, no I/O.
 // options.index: position within a collection (defaults to 0 for ad-hoc calls).
-// options.seed:  drives the seeded PRNG for UID generation; omit for random UIDs.
+// options.uidSalt / options.seed: drive UID generation (uidSalt wins; seed is
+//                bridged to a salt); omit both for random UIDs.
 // options.padWidth: zero-pad digit width for the filename index (defaults to 3).
 // options.uid:   overrides individual UIDs — how the collection layer threads
 //                shared study/series UIDs into grouped files.
@@ -133,6 +144,7 @@ export async function generateFile(
   options?: {
     index?: number
     seed?: number
+    uidSalt?: string
     padWidth?: number
     uid?: Partial<UidSet>
     // Resolves placeholder tokens in tag values; index defaults to options.index.
@@ -141,7 +153,7 @@ export async function generateFile(
 ): Promise<GeneratedFile> {
   const index = options?.index ?? 0
   const padWidth = options?.padWidth ?? 3
-  const uid = resolveUid(options?.seed, index, options?.uid)
+  const uid = resolveUid(effectiveSalt(options ?? {}), index, options?.uid)
 
   const resolvedSpec =
     'tags' in spec && spec.tags
@@ -256,6 +268,15 @@ export function withResolvedSeed(spec: DatasetSpec): DatasetSpec {
     : spec
 }
 
+// Fills in a drawn 128-bit uidSalt when the spec has none, so UIDs are both
+// reproducible (salt recorded) and unique across datasets (fresh random salt
+// per run). Persist the returned spec to re-create the identical UIDs.
+export function withResolvedSalt(spec: DatasetSpec): DatasetSpec {
+  return spec.uidSalt === undefined
+    ? { ...spec, uidSalt: randomBytes(16).toString('hex') }
+    : spec
+}
+
 // A single file's identity within a collection, resolved (final names, UID
 // overrides, merged tags) but not yet materialised — so the disk writer can
 // stream large-image entries while the in-memory path builds buffers.
@@ -327,7 +348,7 @@ function* planCollection(spec: DatasetSpec): Generator<FilePlan> {
     }
   }
 
-  const groupUids = makeGroupUidGenerator(spec.seed)
+  const groupUids = makeGroupUidGenerator(effectiveSalt(spec))
   let studyOrdinal = 0
   for (const study of studies) {
     const copies = study.count ?? 1
@@ -374,11 +395,11 @@ function* planCollection(spec: DatasetSpec): Generator<FilePlan> {
 
 async function materialisePlan(
   plan: FilePlan,
-  seed: number | undefined,
+  salt: string | undefined,
 ): Promise<GeneratedFile> {
   const file = await generateFile(plan.fileSpec, {
     index: plan.index,
-    seed,
+    uidSalt: salt,
     uid: plan.uidOverride,
     context: plan.context,
   })
@@ -390,8 +411,9 @@ async function materialisePlan(
 export async function* generateCollectionFromSpec(
   spec: DatasetSpec,
 ): AsyncGenerator<GeneratedFile> {
+  const salt = effectiveSalt(spec)
   for (const plan of planCollection(spec)) {
-    yield await materialisePlan(plan, spec.seed)
+    yield await materialisePlan(plan, salt)
   }
 }
 
@@ -409,6 +431,7 @@ export type CollectionPreviewItem = {
 export async function* previewCollection(
   spec: DatasetSpec,
 ): AsyncGenerator<CollectionPreviewItem> {
+  const salt = effectiveSalt(spec)
   for (const plan of planCollection(spec)) {
     if (plan.fileSpec.type === 'large-image') {
       yield {
@@ -418,7 +441,7 @@ export async function* previewCollection(
         approxBytes: plan.fileSpec.targetBytes,
       }
     } else {
-      const file = await materialisePlan(plan, spec.seed)
+      const file = await materialisePlan(plan, salt)
       yield {
         relativePath: plan.relativePath,
         type: plan.fileSpec.type,
@@ -439,6 +462,7 @@ export async function writeCollectionFromSpec(
   mkdirSync(root, { recursive: true })
 
   const manifest: CollectionManifest = []
+  const salt = effectiveSalt(spec)
   const createdDirs = new Set<string>([root])
   const ensureDir = (filePath: string) => {
     const dir = dirname(filePath)
@@ -461,7 +485,7 @@ export async function writeCollectionFromSpec(
           `large-image targetBytes (${large.targetBytes}) exceeds the 50 GB limit`,
         )
       }
-      const uid = resolveUid(spec.seed, plan.index, plan.uidOverride)
+      const uid = resolveUid(salt, plan.index, plan.uidOverride)
       streamLargeImage(filePath, {
         targetBytes: large.targetBytes,
         modality: large.modality,
@@ -469,7 +493,7 @@ export async function writeCollectionFromSpec(
         tags: resolveTagTemplates(large.tags, plan.context),
       })
     } else {
-      const file = await materialisePlan(plan, spec.seed)
+      const file = await materialisePlan(plan, salt)
       await writeFile(filePath, file.buffer)
     }
     manifest.push({

@@ -1,12 +1,34 @@
-import { randomBytes } from 'node:crypto'
-
-// Role codes embedded in the UID suffix to guarantee study/series/sop uniqueness per file.
-const ROLE_CODE = { study: 1, series: 2, sop: 3 } as const
-type UidRole = keyof typeof ROLE_CODE
+import { createHash, randomBytes } from 'node:crypto'
 
 export type UidSet = { study: string; series: string; sop: string }
 
-// Simple 32-bit LCG — not cryptographic, sufficient for deterministic test UIDs.
+// Hash-derived UID: 2.25.<128-bit sha256(salt‖key) as decimal> — a conformant
+// UUID-derived form. The salt namespaces the digest so different datasets get
+// disjoint UIDs; the same (salt, key) is stable, which preserves cross-file
+// links and reproducibility. Length ≤ 44 chars, within the 64-char UI VR limit.
+export function hashUid(salt: string, key: string): string {
+  const digest = createHash('sha256')
+    .update(salt)
+    .update(' ')
+    .update(key)
+    .digest()
+  const n = BigInt(`0x${digest.subarray(0, 16).toString('hex')}`)
+  return `2.25.${n.toString()}`
+}
+
+// A random 128-bit UID for the saltless (non-reproducible) path.
+function randomUid(): string {
+  const n = BigInt(`0x${randomBytes(16).toString('hex')}`)
+  return `2.25.${n.toString()}`
+}
+
+// Bridges the numeric `seed` to a salt string when no explicit uidSalt is given, so seed-based
+// determinism carries through. undefined for a seedless spec (→ random UIDs).
+export function seedToSalt(seed: number | undefined): string | undefined {
+  return seed === undefined ? undefined : `seed:${seed}`
+}
+
+// Simple 32-bit LCG — not cryptographic, sufficient for deterministic sampling.
 function lcg(seed: number): () => number {
   let s = seed >>> 0
   return () => {
@@ -15,23 +37,8 @@ function lcg(seed: number): () => number {
   }
 }
 
-function formatUid(a: number, b: number, role: UidRole): string {
-  // 2.25.<a>.<b>.<roleCode> — dot-separated, no padding, no leading zeros.
-  return `2.25.${a}.${b}.${ROLE_CODE[role]}`
-}
-
-function randomUid(role: UidRole): string {
-  const buf = randomBytes(8)
-  return formatUid(buf.readUInt32BE(0), buf.readUInt32BE(4), role)
-}
-
-function seededUid(next: () => number, role: UidRole): string {
-  return formatUid(next(), next(), role)
-}
-
 // Offsets each seeded stream into its own domain so independent consumers of
 // the same dataset seed cannot draw colliding sequences.
-const GROUP_STREAM_OFFSET = 0x9e3779b9
 export const PARAMETRIC_STREAM_OFFSET = 0x85ebca6b
 
 // All seeded streams derive their LCG seed here; the offset separates stream
@@ -51,53 +58,30 @@ export type GroupUidGenerator = {
 }
 
 // Shared study/series UIDs for grouped collections — deterministic per
-// (seed, studyIndex[, seriesIndex]), random when seed is omitted.
-export function makeGroupUidGenerator(seed?: number): GroupUidGenerator {
-  if (seed === undefined) {
-    return {
-      study: () => randomUid('study'),
-      series: () => randomUid('series'),
-    }
+// (salt, studyIndex[, seriesIndex]), random when salt is omitted.
+export function makeGroupUidGenerator(salt?: string): GroupUidGenerator {
+  if (salt === undefined) {
+    return { study: () => randomUid(), series: () => randomUid() }
   }
-
   return {
-    study: (studyIndex) =>
-      seededUid(
-        seededStream(seed, GROUP_STREAM_OFFSET, studyIndex + 1, 0),
-        'study',
-      ),
+    study: (studyIndex) => hashUid(salt, `study:${studyIndex}`),
     series: (studyIndex, seriesIndex) =>
-      seededUid(
-        seededStream(
-          seed,
-          GROUP_STREAM_OFFSET,
-          studyIndex + 1,
-          seriesIndex + 1,
-        ),
-        'series',
-      ),
+      hashUid(salt, `series:${studyIndex}:${seriesIndex}`),
   }
 }
 
 export type UidGenerator = (fileIndex: number) => UidSet
 
-export function makeUidGenerator(seed?: number): UidGenerator {
-  if (seed === undefined) {
-    return () => ({
-      study: randomUid('study'),
-      series: randomUid('series'),
-      sop: randomUid('sop'),
-    })
+// Per-file UID set. Grouped files take only .sop from here (study/series are
+// overridden with shared group UIDs); flat files use all three. The role-tagged
+// keys keep study/series/sop disjoint by construction.
+export function makeUidGenerator(salt?: string): UidGenerator {
+  if (salt === undefined) {
+    return () => ({ study: randomUid(), series: randomUid(), sop: randomUid() })
   }
-
-  // Seed the PRNG with a combination of the dataset seed and the file index so
-  // UIDs are both deterministic per (seed, index) pair and unique across files.
-  return (fileIndex: number) => {
-    const next = seededStream(seed, 0, fileIndex, 0)
-    return {
-      study: seededUid(next, 'study'),
-      series: seededUid(next, 'series'),
-      sop: seededUid(next, 'sop'),
-    }
-  }
+  return (fileIndex: number) => ({
+    study: hashUid(salt, `study:flat:${fileIndex}`),
+    series: hashUid(salt, `series:flat:${fileIndex}`),
+    sop: hashUid(salt, `sop:${fileIndex}`),
+  })
 }

@@ -8,7 +8,7 @@ import {
   buildMeta,
   serializeDict,
 } from './generator.js'
-import { makeUidGenerator, type UidSet } from './uid.js'
+import { makeUidGenerator, seedToSalt, type UidSet } from './uid.js'
 
 // A defined-length OW element carries a 32-bit length; 0xFFFFFFFF is reserved
 // for "undefined length", so 0xFFFFFFFE (~4 GB) is the largest native payload.
@@ -34,7 +34,9 @@ export type LargeImageSpec = {
   /** Approximate total file size in bytes (must exceed the 512 MB cap). */
   targetBytes: number
   modality?: Modality
-  /** Drawn when omitted; fixes the instance UIDs for reproducibility. */
+  /** UID namespace (hash-derived UIDs); random when both salt and seed omitted. */
+  uidSalt?: string
+  /** Bridged to a salt when uidSalt is omitted; fixes the instance UIDs. */
   seed?: number
 }
 
@@ -51,7 +53,9 @@ export type StreamLargeImageOptions = {
   /** Approximate total file size in bytes (no floor — small values are valid). */
   targetBytes: number
   modality?: Modality
-  /** Drawn when omitted; fixes the instance UIDs for reproducibility. */
+  /** UID namespace (hash-derived UIDs); random when both salt and seed omitted. */
+  uidSalt?: string
+  /** Bridged to a salt when uidSalt is omitted; fixes the instance UIDs. */
   seed?: number
   /** Explicit UID set — used as-is (e.g. collection threading shared study/series UIDs). */
   uid?: UidSet
@@ -220,7 +224,9 @@ export function streamLargeImage(
     fragmentBytes = FRAGMENT_MAX_BYTES,
   } = options
   const modality = options.modality ?? 'CT'
-  const uid = options.uid ?? makeUidGenerator(options.seed)(0)
+  const uid =
+    options.uid ??
+    makeUidGenerator(options.uidSalt ?? seedToSalt(options.seed))(0)
   const identity: ImageIdentity = { modality, uid, tags: options.tags }
 
   mkdirSync(resolve(outPath, '..'), { recursive: true })
@@ -292,6 +298,7 @@ export function writeLargeImageFile(
   return streamLargeImage(outPath, {
     targetBytes,
     modality: spec.modality,
+    uidSalt: spec.uidSalt,
     seed: spec.seed,
     chunkBytes: options.chunkBytes,
   })

@@ -13,6 +13,7 @@ type DatasetSpec = {
   entries?: EntrySpec[]              // flat entries — each file gets its own UIDs
   studies?: StudySpec[]              // grouped entries — shared study/series UIDs
   seed?: number                      // optional: fixed seed for deterministic UID generation
+  uidSalt?: string                   // optional: UID namespace (cross-dataset uniqueness)
   layout?: 'flat' | 'hierarchical'   // optional: directory layout for grouped files
 }
 ```
@@ -32,6 +33,24 @@ await writeCollectionFromSpec(effective, './out')
 ```
 
 The `dicom-synth-generate` CLI does this automatically and reports the drawn seed — see the [CLI reference](./cli.md).
+
+### UID model (`uidSalt`)
+
+UIDs are hash-derived: `2.25.<128-bit sha256(salt ‖ key)>` — a conformant UUID-derived form within the 64-char limit. The **salt namespaces every UID in the dataset**:
+
+- **Reproducibility ≠ uniqueness.** `seed` gives *reproducibility* (same seed → same output). A drawn `uidSalt` gives *cross-dataset uniqueness* (a fresh salt per run → disjoint UIDs) **while staying reproducible** (persist the salt). `seed` alone can't do both — that's why the salt is separate.
+- When `uidSalt` is omitted it derives from `seed` (so existing seeded specs keep their deterministic UIDs); with neither, UIDs are random.
+- `withResolvedSalt(spec)` draws and records a 128-bit salt when absent — the analogue of `withResolvedSeed` for UID uniqueness:
+
+```ts
+import { withResolvedSalt, writeCollectionFromSpec } from 'dicom-synth'
+
+const effective = withResolvedSalt(spec) // fills in a drawn uidSalt when absent
+await writeCollectionFromSpec(effective, './out')
+// persist `effective` to reproduce the identical UIDs; different runs get disjoint UIDs
+```
+
+Uniqueness is **statistical** (128-bit space, no registry) — collisions are astronomically unlikely but not registered-unique.
 
 ## `EntrySpec`
 
