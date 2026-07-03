@@ -1,3 +1,10 @@
+# [1.12.0](https://github.com/clintools/dicom-synth/compare/v1.11.0...v1.12.0) (2026-07-03)
+
+
+### Features
+
+* hash-derived UIDs with a dataset salt ([dedc89f](https://github.com/clintools/dicom-synth/commit/dedc89f9cfcbf40a37f495d47bff5897c2c40921))
+
 # [1.11.0](https://github.com/clintools/dicom-synth/compare/v1.10.0...v1.11.0) (2026-06-30)
 
 
