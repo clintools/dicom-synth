@@ -94,6 +94,14 @@ function validateSeed(value: unknown, path: string): void {
   }
 }
 
+function validateUidSalt(value: unknown, path: string): void {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(
+      `${path}: must be a non-empty string; got ${JSON.stringify(value)}`,
+    )
+  }
+}
+
 function validateSizeKbLimit(kb: number, path: string): void {
   if (kb * 1024 > MAX_PIXEL_BYTES) {
     throw new Error(`${path}: exceeds the 512 MB limit`)
@@ -475,6 +483,8 @@ export function validateDatasetSpec(raw: unknown): DatasetSpec {
 
   if ('seed' in r) validateSeed(r.seed, 'DatasetSpec.seed')
 
+  if ('uidSalt' in r) validateUidSalt(r.uidSalt, 'DatasetSpec.uidSalt')
+
   if ('layout' in r) {
     validateEnum(r.layout, VALID_LAYOUTS, 'DatasetSpec.layout')
   }
@@ -492,6 +502,7 @@ export function validateDatasetSpec(raw: unknown): DatasetSpec {
     ...(entries.length > 0 ? { entries } : {}),
     ...(studies.length > 0 ? { studies } : {}),
     ...(r.seed !== undefined ? { seed: r.seed as number } : {}),
+    ...(r.uidSalt !== undefined ? { uidSalt: r.uidSalt as string } : {}),
     ...(r.layout !== undefined ? { layout: r.layout as DatasetLayout } : {}),
     ...(r.pathQuirks !== undefined
       ? { pathQuirks: r.pathQuirks as PathQuirk[] }
@@ -642,6 +653,8 @@ export function validateParametricSpec(raw: unknown): ParametricSpec {
 
   if ('seed' in r) validateSeed(r.seed, 'ParametricSpec.seed')
 
+  if ('uidSalt' in r) validateUidSalt(r.uidSalt, 'ParametricSpec.uidSalt')
+
   if ('layout' in r) {
     validateEnum(r.layout, VALID_LAYOUTS, 'ParametricSpec.layout')
   }
@@ -650,6 +663,7 @@ export function validateParametricSpec(raw: unknown): ParametricSpec {
     studies,
     ...(edgeCases.length > 0 ? { edgeCases } : {}),
     ...(r.seed !== undefined ? { seed: r.seed as number } : {}),
+    ...(r.uidSalt !== undefined ? { uidSalt: r.uidSalt as string } : {}),
     ...(r.layout !== undefined ? { layout: r.layout as DatasetLayout } : {}),
   }
 }

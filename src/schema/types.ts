@@ -126,6 +126,10 @@ export type DatasetSpec = {
   entries?: EntrySpec[]
   studies?: StudySpec[]
   seed?: number
+  // Namespaces hash-derived UIDs (2.25.<digest>). Different salts give disjoint
+  // UIDs across datasets; the same salt is reproducible. When omitted, UIDs
+  // derive from `seed` (or are random when seedless too).
+  uidSalt?: string
   layout?: DatasetLayout
   pathQuirks?: PathQuirk[]
 }
@@ -154,6 +158,7 @@ export type ParametricEdgeCase = EntrySpec & { frequency?: number }
 // concrete, re-runnable DatasetSpec.
 export type ParametricSpec = {
   seed?: number
+  uidSalt?: string // passed through to the resolved DatasetSpec; see DatasetSpec.uidSalt
   studies: ParametricStudies
   edgeCases?: ParametricEdgeCase[]
   layout?: DatasetLayout

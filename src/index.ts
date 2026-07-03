@@ -8,6 +8,7 @@ export {
   generateCollectionFromSpec,
   generateFile,
   previewCollection,
+  withResolvedSalt,
   withResolvedSeed,
   writeCollectionFromSpec,
 } from './collection/writer.js'
@@ -76,3 +77,4 @@ export {
   type TagContext,
   TEMPLATE_VOCAB,
 } from './syntheticFixtures/tagTemplate.js'
+export { hashUid, seedToSalt } from './syntheticFixtures/uid.js'

@@ -147,6 +147,9 @@ export function resolveParametricSpec(spec: ParametricSpec): DatasetSpec {
     ...(entries.length > 0 ? { entries } : {}),
     studies,
     seed,
+    // Pass an explicit salt through; when absent, UIDs derive from `seed` so the
+    // resolved spec stays deterministic ("same seed → identical resolved spec").
+    ...(validated.uidSalt !== undefined ? { uidSalt: validated.uidSalt } : {}),
     ...(validated.layout !== undefined ? { layout: validated.layout } : {}),
   }
 }
