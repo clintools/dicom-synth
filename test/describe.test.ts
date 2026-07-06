@@ -1,4 +1,10 @@
-import { closeSync, ftruncateSync, openSync, readFileSync } from 'node:fs'
+import {
+  closeSync,
+  ftruncateSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+} from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -64,7 +70,7 @@ describe('describeDirectory', () => {
   })
 
   it('reproduces the study/series shape', () => {
-    const { spec, stats } = describeDirectory(dir)
+    const { spec, stats } = describeDirectory(dir, { preserveUids: false })
     expect(stats.dicomFiles).toBe(6)
     expect(stats.skipped).toBe(0)
     expect(spec.studies).toHaveLength(2)
@@ -81,7 +87,7 @@ describe('describeDirectory', () => {
   })
 
   it('preserves modalities and sizes within tolerance', () => {
-    const { spec } = describeDirectory(dir)
+    const { spec } = describeDirectory(dir, { preserveUids: false })
     const entries = allEntries(spec)
     const modalities = new Set(entries.map((e) => e.modality))
     expect(modalities).toEqual(new Set(['CT', 'PT']))
@@ -91,8 +97,8 @@ describe('describeDirectory', () => {
     }
   })
 
-  it('emits no tags when keepTags is omitted (shape only)', () => {
-    const { spec } = describeDirectory(dir)
+  it('emits no tags with preserveUids off and keepTags omitted (shape only)', () => {
+    const { spec } = describeDirectory(dir, { preserveUids: false })
     for (const e of allEntries(spec)) {
       expect(e).not.toHaveProperty('tags')
     }
@@ -118,6 +124,7 @@ describe('describeDirectory', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       const { spec } = describeDirectory(dir, {
+        preserveUids: false,
         keepTags: ['Manufacturer', 'Modality', 'SOPInstanceUID'],
       })
       // Manufacturer survives; preset Modality (CT/PT here) and the UID tag are
@@ -350,11 +357,16 @@ describe('describeDirectory', () => {
         sizeDir,
       )
       // Exact (default) keeps the three distinct sizes as separate entries.
-      const exact = allEntries(describeDirectory(sizeDir).spec)
+      // preserveUids off so the size axis is tested in isolation (varying UIDs
+      // would otherwise force the instances form).
+      const exact = allEntries(
+        describeDirectory(sizeDir, { preserveUids: false }).spec,
+      )
       expect(exact.length).toBeGreaterThan(1)
       // A 10% tolerance folds them into one counted entry.
       const folded = allEntries(
-        describeDirectory(sizeDir, { sizeTolerance: 0.1 }).spec,
+        describeDirectory(sizeDir, { preserveUids: false, sizeTolerance: 0.1 })
+          .spec,
       )
       expect(folded).toHaveLength(1)
       expect(folded[0]?.count).toBe(3)
@@ -371,7 +383,12 @@ describe('describeDirectory', () => {
 
   it('keeps a constant kept tag in the compact entries form', () => {
     // study 2's single CT file has Manufacturer 'ACME' (constant) — entries form.
-    const { spec } = describeDirectory(dir, { keepTags: ['Manufacturer'] })
+    // preserveUids off: varying per-file UIDs would otherwise drive the
+    // instances form regardless of the kept tag.
+    const { spec } = describeDirectory(dir, {
+      preserveUids: false,
+      keepTags: ['Manufacturer'],
+    })
     for (const s of spec.studies ?? []) {
       for (const series of s.series) {
         expect(series.instances).toBeUndefined()
@@ -485,6 +502,229 @@ describe('describeDirectory', () => {
     } finally {
       await rm(empty, { recursive: true, force: true })
     }
+  })
+})
+
+describe('describeDirectory — preserveUids (hash-derived links)', () => {
+  // Source: one study, one series, two instances sharing a FrameOfReferenceUID
+  // (a numeric UID so dcmjs preserves it). Each file mints its own SOPInstanceUID.
+  const linkedSpec: DatasetSpec = {
+    seed: 11,
+    layout: 'hierarchical',
+    studies: [
+      {
+        series: [
+          {
+            tags: { FrameOfReferenceUID: '2.25.98765432109876543210987654321' },
+            entries: [{ type: 'valid-image', modality: 'CT', count: 2 }],
+          },
+        ],
+      },
+    ],
+  }
+
+  let srcDir: string
+
+  beforeEach(async () => {
+    srcDir = await mkdtemp(join(tmpdir(), 'describe-uids-'))
+    await writeCollectionFromSpec(linkedSpec, srcDir)
+  })
+
+  afterEach(async () => {
+    await rm(srcDir, { recursive: true, force: true })
+  })
+
+  // Every UID value present in the source tree, so we can assert none leak.
+  const sourceUids = (dir: string): Set<string> => {
+    const uidKeywords = [
+      'StudyInstanceUID',
+      'SeriesInstanceUID',
+      'SOPInstanceUID',
+      'FrameOfReferenceUID',
+    ]
+    const uids = new Set<string>()
+    const walk = (d: string): void => {
+      for (const entry of readdirSync(d, { withFileTypes: true })) {
+        const p = join(d, entry.name)
+        if (entry.isDirectory()) {
+          walk(p)
+        } else {
+          const record = parseNatural(readFileSync(p))
+          for (const k of uidKeywords) {
+            const v = record[k]
+            if (typeof v === 'string') uids.add(v)
+          }
+        }
+      }
+    }
+    walk(dir)
+    return uids
+  }
+
+  it('preserves a shared FrameOfReferenceUID across regenerated files', async () => {
+    const outDir = await mkdtemp(join(tmpdir(), 'describe-uids-out-'))
+    try {
+      const originals = sourceUids(srcDir)
+      const { spec } = describeDirectory(srcDir, {
+        preserveUids: true,
+        uidSalt: 'cafef00d',
+      })
+      expect(() => validateDatasetSpec(spec)).not.toThrow()
+
+      const manifest = await writeCollectionFromSpec(spec, outDir)
+      const records = manifest.map((m) => parseNatural(readFileSync(m.path)))
+      expect(records).toHaveLength(2)
+
+      // The link survives: both regenerated files share one FrameOfReferenceUID.
+      const fors = new Set(records.map((r) => r.FrameOfReferenceUID))
+      expect(fors.size).toBe(1)
+      // Distinct SOPInstanceUIDs (per file), one shared SeriesInstanceUID.
+      const sops = new Set(records.map((r) => r.SOPInstanceUID))
+      expect(sops.size).toBe(2)
+      expect(new Set(records.map((r) => r.SeriesInstanceUID)).size).toBe(1)
+      expect(new Set(records.map((r) => r.StudyInstanceUID)).size).toBe(1)
+
+      // The synthetic UIDs are hash-derived, not the originals.
+      const [forUid] = fors
+      expect(originals.has(forUid as string)).toBe(false)
+    } finally {
+      await rm(outDir, { recursive: true, force: true })
+    }
+  })
+
+  it('emits no original UID anywhere in the spec', () => {
+    const originals = sourceUids(srcDir)
+    const { spec } = describeDirectory(srcDir, {
+      preserveUids: true,
+      uidSalt: 'cafef00d',
+    })
+    const json = JSON.stringify(spec)
+    for (const uid of originals) {
+      expect(json).not.toContain(uid)
+    }
+    // The salt is recorded so the run is reproducible.
+    expect(spec.uidSalt).toBe('cafef00d')
+  })
+
+  it('is reproducible with the same salt and disjoint with a different one', () => {
+    const a = describeDirectory(srcDir, {
+      preserveUids: true,
+      uidSalt: 'aaaa1111',
+    }).spec
+    const b = describeDirectory(srcDir, {
+      preserveUids: true,
+      uidSalt: 'aaaa1111',
+    }).spec
+    expect(a).toEqual(b)
+
+    const c = describeDirectory(srcDir, {
+      preserveUids: true,
+      uidSalt: 'bbbb2222',
+    }).spec
+    // Different salt → different UID namespace; nothing shared but the shape.
+    const uidsOf = (s: DatasetSpec): Set<string> => {
+      const found = new Set<string>()
+      const scan = (v: unknown): void => {
+        if (typeof v === 'string') {
+          if (v.startsWith('2.25.')) found.add(v)
+        } else if (Array.isArray(v)) {
+          for (const x of v) scan(x)
+        } else if (v && typeof v === 'object') {
+          for (const x of Object.values(v)) scan(x)
+        }
+      }
+      scan(s.studies)
+      return found
+    }
+    const setA = uidsOf(a)
+    const setC = uidsOf(c)
+    expect(setA.size).toBeGreaterThan(0)
+    for (const uid of setC) expect(setA.has(uid)).toBe(false)
+  })
+
+  it('round-trips a single-file series (entries form) with hashed group UIDs', async () => {
+    const oneDir = await mkdtemp(join(tmpdir(), 'describe-uids-one-'))
+    const outDir = await mkdtemp(join(tmpdir(), 'describe-uids-one-out-'))
+    try {
+      // One study, one series, one file — takes the entries form, so the hashed
+      // SeriesInstanceUID rides series.tags (not the instances form).
+      await writeCollectionFromSpec(
+        {
+          seed: 12,
+          layout: 'hierarchical',
+          studies: [
+            {
+              series: [{ entries: [{ type: 'valid-image', modality: 'CT' }] }],
+            },
+          ],
+        },
+        oneDir,
+      )
+      const originals = sourceUids(oneDir)
+      const { spec } = describeDirectory(oneDir, {
+        preserveUids: true,
+        uidSalt: 'cafef00d',
+      })
+      const series = spec.studies?.[0]?.series[0]
+      // Entries form (single file), with the hashed SeriesInstanceUID hoisted to
+      // series.tags.
+      expect(series?.entries).toBeDefined()
+      expect(series?.instances).toBeUndefined()
+      expect(typeof series?.tags?.SeriesInstanceUID).toBe('string')
+      expect(() => validateDatasetSpec(spec)).not.toThrow()
+
+      // Regeneration applies the hashed group/instance UIDs, and no original leaks.
+      const manifest = await writeCollectionFromSpec(spec, outDir)
+      const record = parseNatural(readFileSync(manifest[0]?.path as string))
+      for (const k of [
+        'StudyInstanceUID',
+        'SeriesInstanceUID',
+        'SOPInstanceUID',
+      ]) {
+        expect(originals.has(record[k] as string)).toBe(false)
+      }
+      expect(JSON.stringify(spec)).not.toContain([...originals][0] as string)
+    } finally {
+      await rm(oneDir, { recursive: true, force: true })
+      await rm(outDir, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves UIDs by default (no options)', () => {
+    const originals = sourceUids(srcDir)
+    const { spec } = describeDirectory(srcDir)
+    expect(typeof spec.uidSalt).toBe('string')
+    const json = JSON.stringify(spec)
+    for (const uid of originals) expect(json).not.toContain(uid)
+  })
+
+  it('derives a reproducible salt from the dataset when none is given', () => {
+    const a = describeDirectory(srcDir).spec
+    const b = describeDirectory(srcDir).spec
+    // Same tree → same derived salt → identical spec.
+    expect(typeof a.uidSalt).toBe('string')
+    expect(a).toEqual(b)
+  })
+
+  it('derives disjoint salts for different datasets', async () => {
+    const otherDir = await mkdtemp(join(tmpdir(), 'describe-uids-other-'))
+    try {
+      // A structurally identical tree but a different seed → different real
+      // study UIDs → different derived salt.
+      await writeCollectionFromSpec({ ...linkedSpec, seed: 99 }, otherDir)
+      const a = describeDirectory(srcDir).spec
+      const b = describeDirectory(otherDir).spec
+      expect(a.uidSalt).not.toBe(b.uidSalt)
+    } finally {
+      await rm(otherDir, { recursive: true, force: true })
+    }
+  })
+
+  it('emits shape only with freshly minted UIDs when preserveUids is off', () => {
+    const { spec } = describeDirectory(srcDir, { preserveUids: false })
+    expect(spec.uidSalt).toBeUndefined()
+    const json = JSON.stringify(spec)
+    expect(json).not.toContain('FrameOfReferenceUID')
   })
 })
 

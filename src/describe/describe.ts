@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import {
   closeSync,
   openSync,
@@ -20,6 +21,7 @@ import type {
 } from '../schema/types.js'
 import { validateDatasetSpec } from '../schema/validate.js'
 import { escapeTagTemplate } from '../syntheticFixtures/tagTemplate.js'
+import { hashUid } from '../syntheticFixtures/uid.js'
 
 const dcmjsAny = dcmjs as unknown as {
   data: {
@@ -60,6 +62,17 @@ export type DescribeOptions = {
   // trading exact byte fidelity for a smaller spec. Default 0 = exact sizes.
   // Applied to normal images only; large files keep their exact targetBytes.
   sizeTolerance?: number
+  // Preserve DICOM cross-file links PHI-safely (default true): every UID-valued
+  // attribute is replaced by hashUid(uidSalt, original), so the same source UID
+  // maps to the same synthetic UID everywhere (FrameOfReferenceUID stays shared,
+  // etc.) and no original UID is emitted. Set false for shape-only, freshly
+  // minted UIDs.
+  preserveUids?: boolean
+  // UID hashing salt (recorded in the emitted spec). When absent it is derived
+  // from the dataset's own study UIDs, so a given tree always hashes to the same
+  // synthetic UIDs (reproducible) while different datasets get disjoint UID
+  // namespaces automatically. Pass an explicit salt to override that.
+  uidSalt?: string
 }
 
 export type DescribeResult = {
@@ -245,6 +258,86 @@ function extractTags(
   return found ? tags : undefined
 }
 
+// DICOM standard UIDs (SOP classes, transfer syntaxes) share the org root and
+// must not be hashed — they identify structure, not the subject.
+const DICOM_ORG_ROOT = '1.2.840.10008.'
+// Group UIDs are emitted at study/series level; SOPClassUID comes from the
+// modality preset — none are swept into per-file tags.
+const UID_SWEEP_EXCLUDE = new Set([
+  'StudyInstanceUID',
+  'SeriesInstanceUID',
+  'SOPClassUID',
+])
+
+function vrOf(keyword: string): string | undefined {
+  const nm = dcmjsAny.data.DicomMetaDictionary.nameMap
+  return (nm?.[keyword] ?? nm?.[`RETIRED_${keyword}`])?.vr
+}
+
+// Hash a source UID through the shared map so the same original always maps to
+// the same synthetic (referential integrity by construction).
+function hashUidVia(
+  map: Map<string, string>,
+  salt: string,
+  original: string,
+): string {
+  let synthetic = map.get(original)
+  if (synthetic === undefined) {
+    synthetic = hashUid(salt, original)
+    map.set(original, synthetic)
+  }
+  return synthetic
+}
+
+// The original values of every top-level scalar UI-VR attribute (e.g.
+// SOPInstanceUID, FrameOfReferenceUID). Group/class UIDs and well-known standard
+// UIDs are excluded. Sequences are out of scope for now (future work). Captured raw during
+// the walk; hashed only once the salt is known (see hashUidTags).
+function collectUidOriginals(
+  record: Record<string, unknown>,
+): Record<string, string> | undefined {
+  const uids: Record<string, string> = {}
+  let found = false
+  for (const [keyword, value] of Object.entries(record)) {
+    if (UID_SWEEP_EXCLUDE.has(keyword)) continue
+    if (typeof value !== 'string' || value.startsWith(DICOM_ORG_ROOT)) continue
+    if (vrOf(keyword) !== 'UI') continue
+    uids[keyword] = value
+    found = true
+  }
+  return found ? uids : undefined
+}
+
+function hashUidTags(
+  uids: Record<string, string>,
+  salt: string,
+  map: Map<string, string>,
+): DicomTagOverrides {
+  const tags: DicomTagOverrides = {}
+  for (const [keyword, original] of Object.entries(uids)) {
+    tags[keyword] = hashUidVia(map, salt, original)
+  }
+  return tags
+}
+
+// Default salt when none is supplied: a digest of the dataset's own (sorted)
+// study UIDs. Deterministic for a given tree (reproducible), and disjoint across
+// datasets (distinct study UIDs → distinct salt → distinct synthetic namespace).
+function deriveSalt(studyUids: string[]): string {
+  const h = createHash('sha256')
+  for (const uid of [...studyUids].sort()) h.update(uid).update('\n')
+  return h.digest('hex')
+}
+
+function mergeTags(
+  a: DicomTagOverrides | undefined,
+  b: DicomTagOverrides | undefined,
+): DicomTagOverrides | undefined {
+  if (!a) return b
+  if (!b) return a
+  return { ...a, ...b }
+}
+
 // One scanned file: kind, raw byte size, modality (supported presets only), and
 // any kept tags. Records stay in instance (sorted-path) order so the emit step
 // can choose the compact entries form or the Flywheel instances form per series.
@@ -253,6 +346,9 @@ type FileRecord = {
   bytes: number
   modality?: Modality
   tags?: DicomTagOverrides
+  // Raw UID values captured during the walk; hashed into `tags` in a post-walk
+  // pass once the salt (which may derive from every study UID) is known.
+  uidOriginals?: Record<string, string>
 }
 
 type EntryAccum = {
@@ -424,9 +520,14 @@ export function describeDirectory(
   options: DescribeOptions = {},
 ): DescribeResult {
   const keepKeywords = options.keepTags ? resolveKeepTags(options.keepTags) : []
-  // With kept tags we retain per-file records (to build the instances form);
-  // without, collapse on the fly (see SeriesAccum).
-  const keepTags = keepKeywords.length > 0
+
+  const preserveUids = options.preserveUids ?? true
+  // One map for the whole tree — same source UID → same synthetic everywhere.
+  const uidMap = new Map<string, string>()
+
+  // Per-file records are needed for the instances form (kept tags) and for
+  // hashed per-file UIDs; otherwise we collapse on the fly (see SeriesAccum).
+  const useRecords = keepKeywords.length > 0 || preserveUids
 
   const tolerance = options.sizeTolerance ?? 0
   if (!Number.isFinite(tolerance) || tolerance < 0) {
@@ -478,7 +579,12 @@ export function describeDirectory(
       }
     }
 
-    const tags = keepTags ? extractTags(record, keepKeywords) : undefined
+    const keptTags = keepKeywords.length
+      ? extractTags(record, keepKeywords)
+      : undefined
+    // UIDs are captured raw here and hashed after the walk, once the salt
+    // (which may derive from every study UID) is known.
+    const uidOriginals = preserveUids ? collectUidOriginals(record) : undefined
     // Large files keep exact targetBytes; normal images bucket by tolerance,
     // clamped to the 512 MB cap so a near-cap file's bucket can't round over it
     // (which would fail validation). Over-cap buckets all clamp to the cap, so
@@ -486,7 +592,13 @@ export function describeDirectory(
     const bytes = large
       ? size
       : Math.min(bucketBytes(size, tolerance), MAX_PIXEL_BYTES)
-    const fileRecord: FileRecord = { large, bytes, modality, tags }
+    const fileRecord: FileRecord = {
+      large,
+      bytes,
+      modality,
+      tags: keptTags,
+      uidOriginals,
+    }
 
     let study = studies.get(studyUid)
     if (!study) {
@@ -495,7 +607,7 @@ export function describeDirectory(
     }
     let series = study.get(seriesUid)
     if (!series) {
-      series = keepTags ? [] : new Map<string, EntryAccum>()
+      series = useRecords ? [] : new Map<string, EntryAccum>()
       study.set(seriesUid, series)
     }
     if (Array.isArray(series)) {
@@ -505,15 +617,60 @@ export function describeDirectory(
     }
   }
 
-  const studySpecs: StudySpec[] = [...studies.values()].map((study) => ({
-    series: [...study.values()].map(seriesSpecFromAccum),
-  }))
+  // Salt is known only now: absent an explicit one, it derives from the study
+  // UIDs gathered during the walk. Hash each file's captured UIDs into its tags.
+  const salt = preserveUids
+    ? (options.uidSalt ?? deriveSalt([...studies.keys()]))
+    : undefined
+  if (salt !== undefined) {
+    for (const study of studies.values()) {
+      for (const series of study.values()) {
+        if (!Array.isArray(series)) continue
+        for (const rec of series) {
+          if (rec.uidOriginals) {
+            rec.tags = mergeTags(
+              rec.tags,
+              hashUidTags(rec.uidOriginals, salt, uidMap),
+            )
+          }
+        }
+      }
+    }
+  }
+
+  // With preserveUids, emit the hashed group UIDs at study/series level (the
+  // per-file SOP/FrameOfReference UIDs already ride the record tags above).
+  const withGroupUid = (spec: SeriesSpec, seriesUid: string): SeriesSpec =>
+    salt === undefined
+      ? spec
+      : {
+          ...spec,
+          tags: {
+            ...spec.tags,
+            SeriesInstanceUID: hashUidVia(uidMap, salt, seriesUid),
+          },
+        }
+
+  const studySpecs: StudySpec[] = [...studies.entries()].map(
+    ([studyUid, study]) => ({
+      ...(salt !== undefined
+        ? { tags: { StudyInstanceUID: hashUidVia(uidMap, salt, studyUid) } }
+        : {}),
+      series: [...study.entries()].map(([seriesUid, accum]) =>
+        withGroupUid(seriesSpecFromAccum(accum), seriesUid),
+      ),
+    }),
+  )
 
   if (studySpecs.length === 0) {
     throw new Error(`describe: no DICOM series found in ${dir}`)
   }
 
-  const spec: DatasetSpec = { studies: studySpecs, layout: 'hierarchical' }
+  const spec: DatasetSpec = {
+    studies: studySpecs,
+    layout: 'hierarchical',
+    ...(salt !== undefined ? { uidSalt: salt } : {}),
+  }
   validateDatasetSpec(spec)
   return { spec, stats }
 }

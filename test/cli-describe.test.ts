@@ -70,4 +70,43 @@ describe('dicom-synth-describe CLI', () => {
     const code = await run([src, '--size-tolerance', '-1'])
     expect(code).not.toBe(0)
   })
+
+  it.skipIf(!hasBuild)('preserves UIDs by default (derived salt)', async () => {
+    const out = join(outDir, 'spec.json')
+    const code = await run([src, '--out', out])
+    expect(code).toBe(0)
+    const spec = JSON.parse(readFileSync(out, 'utf8'))
+    expect(typeof spec.uidSalt).toBe('string')
+    expect(() => validateDatasetSpec(spec)).not.toThrow()
+  })
+
+  it.skipIf(!hasBuild)('records an explicit --uid-salt', async () => {
+    const out = join(outDir, 'spec.json')
+    const code = await run([src, '--out', out, '--uid-salt', 'deadbeef'])
+    expect(code).toBe(0)
+    const spec = JSON.parse(readFileSync(out, 'utf8'))
+    expect(spec.uidSalt).toBe('deadbeef')
+    expect(() => validateDatasetSpec(spec)).not.toThrow()
+  })
+
+  it.skipIf(!hasBuild)('omits the salt with --no-preserve-uids', async () => {
+    const out = join(outDir, 'spec.json')
+    const code = await run([src, '--out', out, '--no-preserve-uids'])
+    expect(code).toBe(0)
+    const spec = JSON.parse(readFileSync(out, 'utf8'))
+    expect(spec.uidSalt).toBeUndefined()
+  })
+
+  it.skipIf(!hasBuild)(
+    'rejects --uid-salt with --no-preserve-uids',
+    async () => {
+      const code = await run([
+        src,
+        '--uid-salt',
+        'deadbeef',
+        '--no-preserve-uids',
+      ])
+      expect(code).not.toBe(0)
+    },
+  )
 })
