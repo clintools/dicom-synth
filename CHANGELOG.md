@@ -1,3 +1,10 @@
+# [1.13.0](https://github.com/clintools/dicom-synth/compare/v1.12.0...v1.13.0) (2026-07-06)
+
+
+### Features
+
+* preserve cross-file UID links in describe (on by default) ([687ca5c](https://github.com/clintools/dicom-synth/commit/687ca5c6d7f9ab2dafc802daa996488ce119d1b6))
+
 # [1.12.0](https://github.com/clintools/dicom-synth/compare/v1.11.0...v1.12.0) (2026-07-03)
 
 
