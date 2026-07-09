@@ -1,3 +1,10 @@
+# [1.14.0](https://github.com/clintools/dicom-synth/compare/v1.13.0...v1.14.0) (2026-07-09)
+
+
+### Features
+
+* preserve UID references nested in sequences on describe ([e5c8972](https://github.com/clintools/dicom-synth/commit/e5c8972b201f91b4cea28a9e392b3d6257ae2ac4))
+
 # [1.13.0](https://github.com/clintools/dicom-synth/compare/v1.12.0...v1.13.0) (2026-07-06)
 
 
