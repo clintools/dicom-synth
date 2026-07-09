@@ -262,16 +262,25 @@ function extractTags(
 // must not be hashed — they identify structure, not the subject.
 const DICOM_ORG_ROOT = '1.2.840.10008.'
 // Group UIDs are emitted at study/series level; SOPClassUID comes from the
-// modality preset — none are swept into per-file tags.
+// modality preset — none are swept into per-file tags. Top level only: the
+// same keywords inside a sequence item are references and must be hashed.
 const UID_SWEEP_EXCLUDE = new Set([
   'StudyInstanceUID',
   'SeriesInstanceUID',
   'SOPClassUID',
 ])
 
+// Memoised: the dictionary is static, and the sweep looks the same keywords up
+// per item per file across a whole dataset scan.
+const vrCache = new Map<string, string | undefined>()
 function vrOf(keyword: string): string | undefined {
+  if (vrCache.has(keyword)) return vrCache.get(keyword)
   const nm = dcmjsAny.data.DicomMetaDictionary.nameMap
-  return (nm?.[keyword] ?? nm?.[`RETIRED_${keyword}`])?.vr
+  const vr = (nm?.[keyword] ?? nm?.[`RETIRED_${keyword}`])?.vr as
+    | string
+    | undefined
+  vrCache.set(keyword, vr)
+  return vr
 }
 
 // Hash a source UID through the shared map so the same original always maps to
@@ -289,33 +298,115 @@ function hashUidVia(
   return synthetic
 }
 
-// The original values of every top-level scalar UI-VR attribute (e.g.
-// SOPInstanceUID, FrameOfReferenceUID). Group/class UIDs and well-known standard
-// UIDs are excluded. Sequences are out of scope for now (future work). Captured raw during
-// the walk; hashed only once the salt is known (see hashUidTags).
+function isUidLeaf(value: unknown): value is string | string[] {
+  return (
+    typeof value === 'string' ||
+    (Array.isArray(value) && value.every((v) => typeof v === 'string'))
+  )
+}
+
+// True when a UI-VR leaf carries at least one UID that would be hashed —
+// well-known org-root UIDs alone do not count.
+function hasHashableUid(value: string | string[]): boolean {
+  const uids = typeof value === 'string' ? [value] : value
+  return uids.some((v) => !v.startsWith(DICOM_ORG_ROOT))
+}
+
+// Prunes a naturalised sequence to its UID reference skeleton: UI-VR leaves are
+// kept (well-known org-root UIDs verbatim as scaffolding, the rest hashed
+// later), nested sequences recurse, and every other attribute is dropped — so
+// only hashed UIDs ever leave the dataset. Items (and whole sequences) with
+// nothing hashable are dropped entirely.
+function pruneUidSequence(
+  value: unknown,
+): Record<string, unknown>[] | undefined {
+  // dcmjs may naturalise a single-item sequence as a bare object.
+  const items = Array.isArray(value) ? value : [value]
+  const pruned: Record<string, unknown>[] = []
+  for (const item of items) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item))
+      continue
+    const skeleton: Record<string, unknown> = {}
+    let hashable = false
+    for (const [keyword, v] of Object.entries(item)) {
+      if (keyword === '_vrMap') continue
+      const vr = vrOf(keyword)
+      if (vr === 'UI') {
+        if (isUidLeaf(v)) {
+          skeleton[keyword] = v
+          if (hasHashableUid(v)) hashable = true
+        }
+      } else if (vr === 'SQ') {
+        const nested = pruneUidSequence(v)
+        if (nested) {
+          skeleton[keyword] = nested
+          hashable = true
+        }
+      }
+    }
+    if (hashable) pruned.push(skeleton)
+  }
+  return pruned.length > 0 ? pruned : undefined
+}
+
+// The original values of every UI-VR attribute — scalar, multi-valued, or
+// nested inside a sequence (pruned to a UID-only skeleton). Group/class UIDs
+// and well-known standard UIDs are excluded. Captured raw during the walk;
+// hashed only once the salt is known (see hashUidTags).
 function collectUidOriginals(
   record: Record<string, unknown>,
-): Record<string, string> | undefined {
-  const uids: Record<string, string> = {}
+): Record<string, unknown> | undefined {
+  const uids: Record<string, unknown> = {}
   let found = false
   for (const [keyword, value] of Object.entries(record)) {
     if (UID_SWEEP_EXCLUDE.has(keyword)) continue
-    if (typeof value !== 'string' || value.startsWith(DICOM_ORG_ROOT)) continue
-    if (vrOf(keyword) !== 'UI') continue
-    uids[keyword] = value
-    found = true
+    const vr = vrOf(keyword)
+    if (vr === 'UI') {
+      if (isUidLeaf(value) && hasHashableUid(value)) {
+        uids[keyword] = value
+        found = true
+      }
+    } else if (vr === 'SQ') {
+      const pruned = pruneUidSequence(value)
+      if (pruned) {
+        uids[keyword] = pruned
+        found = true
+      }
+    }
   }
   return found ? uids : undefined
 }
 
+// Hash every UID inside a captured value (scalars, arrays, pruned skeletons);
+// well-known org-root UIDs pass through verbatim, the rest via the shared map.
+function hashUidValue(
+  value: unknown,
+  salt: string,
+  map: Map<string, string>,
+): unknown {
+  if (typeof value === 'string') {
+    return value.startsWith(DICOM_ORG_ROOT)
+      ? value
+      : hashUidVia(map, salt, value)
+  }
+  if (Array.isArray(value)) return value.map((v) => hashUidValue(v, salt, map))
+  // Captured skeletons hold nothing but UID strings, arrays, and nested items.
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+      k,
+      hashUidValue(v, salt, map),
+    ]),
+  )
+}
+
 function hashUidTags(
-  uids: Record<string, string>,
+  uids: Record<string, unknown>,
   salt: string,
   map: Map<string, string>,
 ): DicomTagOverrides {
   const tags: DicomTagOverrides = {}
   for (const [keyword, original] of Object.entries(uids)) {
-    tags[keyword] = hashUidVia(map, salt, original)
+    tags[keyword] = hashUidValue(original, salt, map)
   }
   return tags
 }
@@ -346,9 +437,10 @@ type FileRecord = {
   bytes: number
   modality?: Modality
   tags?: DicomTagOverrides
-  // Raw UID values captured during the walk; hashed into `tags` in a post-walk
-  // pass once the salt (which may derive from every study UID) is known.
-  uidOriginals?: Record<string, string>
+  // Raw UID values (scalars, arrays, pruned sequence skeletons) captured during
+  // the walk; hashed into `tags` in a post-walk pass once the salt (which may
+  // derive from every study UID) is known.
+  uidOriginals?: Record<string, unknown>
 }
 
 type EntryAccum = {
@@ -623,11 +715,20 @@ export function describeDirectory(
     ? (options.uidSalt ?? deriveSalt([...studies.keys()]))
     : undefined
   if (salt !== undefined) {
+    // A kept tag can collide with the sweep (e.g. a kept sequence that carries
+    // UID references); the hashed value wins — no original UID ever leaves —
+    // but the user asked for verbatim, so say what happened.
+    const sweptKeepTags = new Set<string>()
     for (const study of studies.values()) {
       for (const series of study.values()) {
         if (!Array.isArray(series)) continue
         for (const rec of series) {
           if (rec.uidOriginals) {
+            if (rec.tags) {
+              for (const keyword of Object.keys(rec.uidOriginals)) {
+                if (keyword in rec.tags) sweptKeepTags.add(keyword)
+              }
+            }
             rec.tags = mergeTags(
               rec.tags,
               hashUidTags(rec.uidOriginals, salt, uidMap),
@@ -635,6 +736,11 @@ export function describeDirectory(
           }
         }
       }
+    }
+    for (const keyword of sweptKeepTags) {
+      console.warn(
+        `describe: keep-tag "${keyword}" contains UID references — kept as its hashed UID skeleton, not verbatim (disable with preserveUids: false)`,
+      )
     }
   }
 

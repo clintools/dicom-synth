@@ -82,7 +82,7 @@ dicom-synth-describe ./real-dataset --no-preserve-uids --out spec.json
 | `--uid-salt <hex>` | Pin the hashing salt to a specific namespace; when omitted the salt derives from the dataset's own study UIDs (reproducible, and disjoint across datasets). Cannot combine with `--no-preserve-uids` |
 | `--gzip` | Write the spec gzip-compressed (also inferred from a `.gz` `--out` suffix) |
 
-By default UIDs are preserved as hash-derived synthetics — cross-file links (e.g. `FrameOfReferenceUID`) survive with no original UID emitted. Modality-coupled and UID-valued tags are dropped from the keep-list with a warning (see the [describe tool](./describe.md)). Scan stats (DICOM/skipped/unsupported-modality counts) — and the UID salt — are written to stderr.
+By default UIDs are preserved as hash-derived synthetics — cross-file links (e.g. `FrameOfReferenceUID`, or `ReferencedSOPInstanceUID` inside a reference sequence) survive with no original UID emitted. Modality-coupled and UID-valued tags are dropped from the keep-list with a warning (see the [describe tool](./describe.md)). Scan stats (DICOM/skipped/unsupported-modality counts) — and the UID salt — are written to stderr.
 
 ## `dicom-synth-fetch`
 
