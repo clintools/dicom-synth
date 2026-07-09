@@ -728,6 +728,182 @@ describe('describeDirectory — preserveUids (hash-derived links)', () => {
   })
 })
 
+describe('describeDirectory — preserveUids (nested-sequence references)', () => {
+  const CT_SOP_CLASS = '1.2.840.10008.5.1.4.1.1.2'
+  const REFERENCED_SOP = '2.25.777000111222333'
+
+  // dcmjs may naturalise a single-item sequence as a bare object.
+  const firstItem = (seq: unknown): Record<string, unknown> =>
+    (Array.isArray(seq) ? seq[0] : seq) as Record<string, unknown>
+
+  // File A pins its SOPInstanceUID; file B references it via a
+  // SourceImageSequence that also carries a non-UID field (pruned on describe).
+  const referencingSpec: DatasetSpec = {
+    seed: 21,
+    layout: 'hierarchical',
+    studies: [
+      {
+        series: [
+          {
+            entries: [
+              {
+                type: 'valid-image',
+                modality: 'CT',
+                tags: { SOPInstanceUID: REFERENCED_SOP },
+              },
+              {
+                type: 'valid-image',
+                modality: 'CT',
+                tags: {
+                  SourceImageSequence: [
+                    {
+                      ReferencedSOPClassUID: CT_SOP_CLASS,
+                      ReferencedSOPInstanceUID: REFERENCED_SOP,
+                      SpatialLocationsPreserved: 'YES',
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+
+  let srcDir: string
+
+  beforeEach(async () => {
+    srcDir = await mkdtemp(join(tmpdir(), 'describe-seq-'))
+    await writeCollectionFromSpec(referencingSpec, srcDir)
+  })
+
+  afterEach(async () => {
+    await rm(srcDir, { recursive: true, force: true })
+  })
+
+  it('preserves an image-to-image reference across regeneration', async () => {
+    const outDir = await mkdtemp(join(tmpdir(), 'describe-seq-out-'))
+    try {
+      const { spec } = describeDirectory(srcDir, { uidSalt: 'cafef00d' })
+      expect(() => validateDatasetSpec(spec)).not.toThrow()
+
+      const manifest = await writeCollectionFromSpec(spec, outDir)
+      const records = manifest.map((m) => parseNatural(readFileSync(m.path)))
+      expect(records).toHaveLength(2)
+
+      const referrer = records.find((r) => r.SourceImageSequence)
+      const referred = records.find((r) => !r.SourceImageSequence)
+      expect(referrer).toBeDefined()
+      expect(referred).toBeDefined()
+
+      const item = firstItem(referrer?.SourceImageSequence)
+      // The link survives: the nested reference equals the referenced file's
+      // synthetic SOPInstanceUID (scalar sweep and nested sweep share one map).
+      expect(item.ReferencedSOPInstanceUID).toBe(referred?.SOPInstanceUID)
+      // Neither is the original.
+      expect(referred?.SOPInstanceUID).not.toBe(REFERENCED_SOP)
+      // The well-known class UID passes through untouched.
+      expect(item.ReferencedSOPClassUID).toBe(CT_SOP_CLASS)
+    } finally {
+      await rm(outDir, { recursive: true, force: true })
+    }
+  })
+
+  it('warns when a kept sequence is replaced by its hashed UID skeleton', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { spec } = describeDirectory(srcDir, {
+        uidSalt: 'cafef00d',
+        keepTags: ['SourceImageSequence'],
+      })
+      // The sweep wins: no original UID leaves, so the verbatim keep (which
+      // would leak the referenced UID) is replaced by the pruned skeleton.
+      const json = JSON.stringify(spec)
+      expect(json).not.toContain(REFERENCED_SOP)
+      expect(json).not.toContain('SpatialLocationsPreserved')
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('keep-tag "SourceImageSequence"'),
+      )
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('prunes non-UID fields from swept sequences and leaks no original UID', () => {
+    const { spec } = describeDirectory(srcDir, { uidSalt: 'cafef00d' })
+    const json = JSON.stringify(spec)
+    expect(json).not.toContain(REFERENCED_SOP)
+    // The sequence survives as a UID-only skeleton.
+    expect(json).toContain('SourceImageSequence')
+    expect(json).toContain(CT_SOP_CLASS)
+    // Everything that is not a UID is pruned away.
+    expect(json).not.toContain('SpatialLocationsPreserved')
+  })
+
+  it('round-trips a two-level nested reference sequence', async () => {
+    const deepDir = await mkdtemp(join(tmpdir(), 'describe-seq-deep-'))
+    const outDir = await mkdtemp(join(tmpdir(), 'describe-seq-deep-out-'))
+    try {
+      const referencedSeries = '2.25.555666777888999'
+      const deepSop = '2.25.111222333444555'
+      await writeCollectionFromSpec(
+        {
+          seed: 22,
+          layout: 'hierarchical',
+          studies: [
+            {
+              series: [
+                {
+                  entries: [
+                    {
+                      type: 'valid-image',
+                      modality: 'CT',
+                      tags: {
+                        ReferencedSeriesSequence: [
+                          {
+                            SeriesInstanceUID: referencedSeries,
+                            ReferencedSOPSequence: [
+                              {
+                                ReferencedSOPClassUID: CT_SOP_CLASS,
+                                ReferencedSOPInstanceUID: deepSop,
+                              },
+                            ],
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        deepDir,
+      )
+
+      const { spec } = describeDirectory(deepDir, { uidSalt: 'cafef00d' })
+      const json = JSON.stringify(spec)
+      expect(json).not.toContain(referencedSeries)
+      expect(json).not.toContain(deepSop)
+
+      const manifest = await writeCollectionFromSpec(spec, outDir)
+      const record = parseNatural(readFileSync(manifest[0]?.path as string))
+      const outerItem = firstItem(record.ReferencedSeriesSequence)
+      expect(typeof outerItem.SeriesInstanceUID).toBe('string')
+      expect(outerItem.SeriesInstanceUID).not.toBe(referencedSeries)
+      const innerItem = firstItem(outerItem.ReferencedSOPSequence)
+      expect(typeof innerItem.ReferencedSOPInstanceUID).toBe('string')
+      expect(innerItem.ReferencedSOPInstanceUID).not.toBe(deepSop)
+      expect(innerItem.ReferencedSOPClassUID).toBe(CT_SOP_CLASS)
+    } finally {
+      await rm(deepDir, { recursive: true, force: true })
+      await rm(outDir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('readHeaderOnly', () => {
   let dir: string
 
