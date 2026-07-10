@@ -35,4 +35,4 @@ import type { ParametricSpec, ParametricStudies, ParametricEdgeCase, Range } fro
 import { validateParametricSpec } from 'dicom-synth'
 ```
 
-See [`examples/parametric.json`](../examples/parametric.json) for a JSON example and [`examples/convert-data-shape.mjs`](../examples/convert-data-shape.mjs) for converting an exported tree-shape JSON into a `DatasetSpec` (skips non-DICOM files). The `--parametric` CLI path is documented in the [CLI reference](./cli.md).
+See [`examples/parametric.json`](../examples/parametric.json) for a JSON example and [`examples/convert-data-shape.mjs`](../examples/convert-data-shape.mjs) for converting an exported tree-shape JSON into a generic-tree `DatasetSpec` (mixed DICOM + sized non-DICOM files). The `--parametric` CLI path is documented in the [CLI reference](./cli.md).

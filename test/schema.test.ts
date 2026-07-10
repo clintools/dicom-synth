@@ -226,10 +226,10 @@ describe('validateDatasetSpec — invalid inputs', () => {
     ).toThrow(/512 MB/)
   })
 
-  it('rejects targetSizeKb on non-image types', () => {
+  it('rejects targetSizeKb on non-image types (non-dicom excepted)', () => {
     expect(() =>
       validateDatasetSpec({
-        entries: [{ type: 'non-dicom', targetSizeKb: 100 }],
+        entries: [{ type: 'fake-signature', targetSizeKb: 100 }],
       }),
     ).toThrow(/targetSizeKb: not supported/)
   })

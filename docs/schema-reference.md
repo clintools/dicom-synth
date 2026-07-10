@@ -12,13 +12,14 @@ import type { DatasetSpec } from 'dicom-synth'
 type DatasetSpec = {
   entries?: EntrySpec[]              // flat entries — each file gets its own UIDs
   studies?: StudySpec[]              // grouped entries — shared study/series UIDs
+  tree?: TreeNode[]                  // explicit directory tree — see Generic tree below
   seed?: number                      // optional: fixed seed for deterministic UID generation
   uidSalt?: string                   // optional: UID namespace (cross-dataset uniqueness)
   layout?: 'flat' | 'hierarchical'   // optional: directory layout for grouped files
 }
 ```
 
-At least one of `entries` or `studies` must be present and non-empty; both may be used together.
+At least one of `entries`, `studies`, or `tree` must be present and non-empty; they may be used together.
 
 `seed` makes UID generation fully deterministic across runs — the same spec + seed produces a byte-identical collection, so a small spec JSON is enough to re-create even a very large dataset.
 
@@ -78,9 +79,11 @@ An `EntrySpec` is a `FileSpec` plus an optional `count` field (how many times to
 
 ```json
 { "type": "non-dicom", "content": "not a dicom file" }
+{ "type": "non-dicom", "targetSizeKb": 40 }
+{ "type": "non-dicom", "targetBytes": 12345 }
 ```
 
-`content` defaults to `"not dicom"`.
+`content`, `targetSizeKb`, and `targetBytes` are mutually exclusive. The sized forms emit deterministic placeholder bytes at exactly that size (`targetBytes` ≤ 512 MB) — useful for reproducing the non-DICOM files of a real tree (CSVs, logs, caches) without their content. With none of the three, `content` defaults to `"not dicom"`.
 
 ## Sizing (`rows`/`columns`/`frames` or `targetSizeKb`)
 
@@ -239,6 +242,50 @@ A series carries **exactly one** of `entries` or `instances`. The `instances` fo
 
 ```ts
 import type { SeriesInstances } from 'dicom-synth'
+```
+
+## Generic tree (`tree`)
+
+Where `layout` arranges grouped entries into a *preset* shape, `tree` states the directory structure **explicitly** — any nesting, mixed DICOM and non-DICOM files, per-file names and sizes. This is how an arbitrary real tree (site/patient/timepoint/modality/series, plus stray CSVs and logs) is reproduced.
+
+```json
+{
+  "tree": [
+    { "type": "non-dicom", "name": "manifest.csv", "targetSizeKb": 4 },
+    {
+      "name": "patient-0001",
+      "children": [
+        {
+          "name": "PET",
+          "role": "study",
+          "tags": { "PatientID": "P-0001" },
+          "children": [
+            {
+              "name": "Series_0001",
+              "role": "series",
+              "children": [
+                { "type": "valid-image", "modality": "PT", "targetSizeKb": 512, "count": 120 },
+                { "type": "non-dicom", "name": "cache.bin", "targetSizeKb": 9 }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+- A node is a **directory** (`children`, non-empty) or a **file** (an `EntrySpec` — any type, including `large-image`). A node cannot be both.
+- **Grouping stays UID-driven, not path-driven**: a directory marked `role: "study"` mints one shared `StudyInstanceUID` for the image files beneath it; `role: "series"` (which must nest inside a study) likewise mints the shared `SeriesInstanceUID` and drives `InstanceNumber`. Unmarked directories are pure structure — files under them keep their own UIDs. Explicit UID tags on a file still win over role-minted ones.
+- Directory `tags` merge downward into image files (deeper and file-level tags win). Non-image files (`non-dicom`, `fake-signature`, `dicomdir`) take no tags and join no UID group — they merely occupy their place in the tree.
+- `name` is optional on any node: a directory without one gets a positional `dir-NNN`; a file without one gets the standard `<type>-<index>[.dcm]`. Names must be single path components (no `/`), and a named file cannot carry `count > 1` (the copies would collide).
+- `tree` may be combined with `entries`/`studies`; `pathQuirks` decorate tree paths too; `layout` does not affect `tree`.
+
+See [`examples/convert-data-shape.mjs`](../examples/convert-data-shape.mjs) for converting an exported tree-shape JSON into this form.
+
+```ts
+import type { TreeNode, TreeDirNode, TreeFileNode } from 'dicom-synth'
 ```
 
 ## Layout (`layout`)
