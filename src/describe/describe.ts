@@ -7,7 +7,7 @@ import {
   readSync,
   statSync,
 } from 'node:fs'
-import { join } from 'node:path'
+import { basename, extname, join, relative, sep } from 'node:path'
 import { dcmjs } from '../loadDcmjs.js'
 import { MAX_PIXEL_BYTES, MAX_STREAM_BYTES } from '../schema/limits.js'
 import type {
@@ -18,8 +18,9 @@ import type {
   SeriesInstances,
   SeriesSpec,
   StudySpec,
+  TreeNode,
 } from '../schema/types.js'
-import { validateDatasetSpec } from '../schema/validate.js'
+import { positionalName, validateDatasetSpec } from '../schema/validate.js'
 import { escapeTagTemplate } from '../syntheticFixtures/tagTemplate.js'
 import { hashUid } from '../syntheticFixtures/uid.js'
 
@@ -73,6 +74,13 @@ export type DescribeOptions = {
   // synthetic UIDs (reproducible) while different datasets get disjoint UID
   // namespaces automatically. Pass an explicit salt to override that.
   uidSalt?: string
+  // Capture the real directory structure as a generic `tree` spec instead of
+  // the compact studies/series form: anonymised directory names, one node per
+  // file (kind + size; extension kept for non-DICOM), grouping carried by
+  // hashed per-file Study/SeriesInstanceUID tags. Non-DICOM files are captured
+  // as sized placeholders rather than skipped. Requires preserveUids (the
+  // default) — without UIDs the captured tree would lose all grouping.
+  captureTree?: boolean
 }
 
 export type DescribeResult = {
@@ -81,6 +89,9 @@ export type DescribeResult = {
     dicomFiles: number
     skipped: number // non-DICOM, unparseable, or missing grouping UIDs
     unknownModality: number // Modality present but not CT/PT/MR/CR
+    // Files captured as sized non-dicom placeholders (captureTree only —
+    // without it they count as skipped).
+    nonDicomFiles: number
   }
 }
 
@@ -443,6 +454,63 @@ type FileRecord = {
   uidOriginals?: Record<string, unknown>
 }
 
+// Stat + parse one scanned file, header-only above the in-memory cap (never
+// loaded whole). Returns null when the file cannot be captured at all —
+// unreadable, or beyond the 50 GB reproduction ceiling.
+function scanFile(path: string): {
+  size: number
+  large: boolean
+  record: Record<string, unknown> | null
+} | null {
+  let size: number
+  try {
+    size = statSync(path).size
+  } catch {
+    return null
+  }
+  if (size > MAX_STREAM_BYTES) return null
+  const large = size > MAX_PIXEL_BYTES
+  return { size, large, record: large ? readHeaderOnly(path) : parseFull(path) }
+}
+
+// The record's preset modality; 'unsupported' when Modality is present but has
+// no preset (counted by callers, emitted as the default).
+function presetModalityOf(
+  record: Record<string, unknown>,
+): Modality | 'unsupported' | undefined {
+  if (typeof record.Modality !== 'string') return undefined
+  return SUPPORTED_MODALITIES.has(record.Modality as Modality)
+    ? (record.Modality as Modality)
+    : 'unsupported'
+}
+
+// Hash a record's captured UIDs into its tags. A kept tag can collide with the
+// sweep (e.g. a kept sequence that carries UID references); the hashed value
+// wins — no original UID ever leaves — but the user asked for verbatim, so the
+// collision is collected for a warning.
+function hashRecordUids(
+  rec: FileRecord,
+  salt: string,
+  uidMap: Map<string, string>,
+  sweptKeepTags: Set<string>,
+): void {
+  if (!rec.uidOriginals) return
+  if (rec.tags) {
+    for (const keyword of Object.keys(rec.uidOriginals)) {
+      if (keyword in rec.tags) sweptKeepTags.add(keyword)
+    }
+  }
+  rec.tags = mergeTags(rec.tags, hashUidTags(rec.uidOriginals, salt, uidMap))
+}
+
+function warnSweptKeepTags(sweptKeepTags: Set<string>): void {
+  for (const keyword of sweptKeepTags) {
+    console.warn(
+      `describe: keep-tag "${keyword}" contains UID references — kept as its hashed UID skeleton, not verbatim (disable with preserveUids: false)`,
+    )
+  }
+}
+
 type EntryAccum = {
   modality?: Modality
   large: boolean
@@ -604,6 +672,175 @@ function seriesSpecFromAccum(accum: SeriesAccum): SeriesSpec {
     : { entries: [...accum.values()].map(entryOf) }
 }
 
+// One directory of the captured tree; files stay in sorted-path order so the
+// emitted spec is deterministic.
+type TreeDirAccum = {
+  dirs: Map<string, TreeDirAccum>
+  files: TreeLeaf[]
+}
+
+type DicomLeaf = {
+  kind: 'dicom'
+  rec: FileRecord
+  studyUid: string
+  seriesUid: string
+}
+type TreeLeaf = DicomLeaf | { kind: 'other'; bytes: number; ext: string }
+
+function dirAccumFor(root: TreeDirAccum, dirs: string[]): TreeDirAccum {
+  let node = root
+  for (const name of dirs) {
+    let child = node.dirs.get(name)
+    if (!child) {
+      child = { dirs: new Map(), files: [] }
+      node.dirs.set(name, child)
+    }
+    node = child
+  }
+  return node
+}
+
+// A short alphanumeric extension is structural (a consumer may dispatch on
+// .csv/.log); anything else could carry meaning from the original name and is
+// dropped with the rest of it.
+const SAFE_EXTENSION_RE = /^\.[A-Za-z0-9]{1,8}$/
+
+function safeExtension(path: string): string {
+  const ext = extname(basename(path))
+  return SAFE_EXTENSION_RE.test(ext) ? ext : ''
+}
+
+// Emit the captured tree with every original name anonymised: directories are
+// unnamed (the writer assigns positional dir-NNN), DICOM files take the
+// writer's synthetic names, and non-DICOM files get file-NNN plus their
+// (structural) extension.
+function emitTree(acc: TreeDirAccum): TreeNode[] {
+  const nodes: TreeNode[] = []
+  let otherOrdinal = 0
+  for (const leaf of acc.files) {
+    if (leaf.kind === 'other') {
+      otherOrdinal++
+      const name = `${positionalName('file', otherOrdinal)}${leaf.ext}`
+      nodes.push(
+        leaf.bytes > 0
+          ? { type: 'non-dicom', name, targetBytes: leaf.bytes }
+          : { type: 'non-dicom', name, content: '' },
+      )
+    } else {
+      nodes.push(entryOf({ ...leaf.rec, count: 1 }))
+    }
+  }
+  for (const sub of acc.dirs.values()) {
+    nodes.push({ children: emitTree(sub) })
+  }
+  return nodes
+}
+
+// Tree capture: mirrors the real directory structure instead of grouping into
+// studies/series. Grouping still survives — every DICOM node carries its
+// hashed Study/SeriesInstanceUID as tags, so the regenerated files share the
+// same (synthetic) group UIDs without role markers. sizeTolerance is ignored:
+// the tree emits one node per file, so there is nothing to fold.
+function describeTree(
+  dir: string,
+  options: DescribeOptions,
+  keepKeywords: string[],
+): DescribeResult {
+  const root: TreeDirAccum = { dirs: new Map(), files: [] }
+  const stats = {
+    dicomFiles: 0,
+    skipped: 0,
+    unknownModality: 0,
+    nonDicomFiles: 0,
+  }
+  const studyUids = new Set<string>()
+  const dicomLeaves: DicomLeaf[] = []
+
+  for (const path of [...walkFiles(dir)].sort()) {
+    const scanned = scanFile(path)
+    if (!scanned) {
+      stats.skipped++
+      continue
+    }
+    const { size, large, record } = scanned
+    const studyUid = record?.StudyInstanceUID
+    const seriesUid = record?.SeriesInstanceUID
+    const relDirs = relative(dir, path).split(sep).slice(0, -1)
+
+    if (
+      !record ||
+      typeof studyUid !== 'string' ||
+      typeof seriesUid !== 'string'
+    ) {
+      // Not reproducible as a placeholder: non-dicom is capped at the
+      // in-memory limit.
+      if (large) {
+        stats.skipped++
+        continue
+      }
+      stats.nonDicomFiles++
+      dirAccumFor(root, relDirs).files.push({
+        kind: 'other',
+        bytes: size,
+        ext: safeExtension(path),
+      })
+      continue
+    }
+    stats.dicomFiles++
+    studyUids.add(studyUid)
+
+    const preset = presetModalityOf(record)
+    if (preset === 'unsupported') stats.unknownModality++
+    const modality = preset === 'unsupported' ? undefined : preset
+
+    // Tree files sit outside role-marked series, so the writer will not stamp
+    // InstanceNumber — carry the source's value so instance order round-trips.
+    const instanceNumber =
+      typeof record.InstanceNumber === 'number'
+        ? { InstanceNumber: record.InstanceNumber }
+        : typeof record.InstanceNumber === 'string'
+          ? { InstanceNumber: escapeTagTemplate(record.InstanceNumber) }
+          : undefined
+    const leaf: DicomLeaf = {
+      kind: 'dicom',
+      rec: {
+        large,
+        bytes: size,
+        modality,
+        tags: mergeTags(
+          instanceNumber,
+          keepKeywords.length ? extractTags(record, keepKeywords) : undefined,
+        ),
+        uidOriginals: collectUidOriginals(record),
+      },
+      studyUid,
+      seriesUid,
+    }
+    dirAccumFor(root, relDirs).files.push(leaf)
+    dicomLeaves.push(leaf)
+  }
+
+  if (root.files.length === 0 && root.dirs.size === 0) {
+    throw new Error(`describe: no files found in ${dir}`)
+  }
+
+  const salt = options.uidSalt ?? deriveSalt([...studyUids])
+  const uidMap = new Map<string, string>()
+  const sweptKeepTags = new Set<string>()
+  for (const { rec, studyUid, seriesUid } of dicomLeaves) {
+    hashRecordUids(rec, salt, uidMap, sweptKeepTags)
+    rec.tags = mergeTags(rec.tags, {
+      StudyInstanceUID: hashUidVia(uidMap, salt, studyUid),
+      SeriesInstanceUID: hashUidVia(uidMap, salt, seriesUid),
+    })
+  }
+  warnSweptKeepTags(sweptKeepTags)
+
+  const spec: DatasetSpec = { tree: emitTree(root), uidSalt: salt }
+  validateDatasetSpec(spec)
+  return { spec, stats }
+}
+
 // Scans a DICOM directory tree and emits a concrete DatasetSpec describing its
 // shape: studies/series grouped by their UIDs, per-file size as targetSizeKb,
 // and modality. Tags are only included when named in options.keepTags.
@@ -614,6 +851,14 @@ export function describeDirectory(
   const keepKeywords = options.keepTags ? resolveKeepTags(options.keepTags) : []
 
   const preserveUids = options.preserveUids ?? true
+  if (options.captureTree) {
+    if (!preserveUids) {
+      throw new Error(
+        'describe: captureTree requires preserveUids — the captured tree carries its grouping as hashed UID tags',
+      )
+    }
+    return describeTree(dir, options, keepKeywords)
+  }
   // One map for the whole tree — same source UID → same synthetic everywhere.
   const uidMap = new Map<string, string>()
 
@@ -629,27 +874,21 @@ export function describeDirectory(
   }
 
   const studies = new Map<string, StudyAccum>()
-  const stats = { dicomFiles: 0, skipped: 0, unknownModality: 0 }
+  const stats = {
+    dicomFiles: 0,
+    skipped: 0,
+    unknownModality: 0,
+    nonDicomFiles: 0,
+  }
 
   // Sort paths for deterministic output independent of filesystem order.
   for (const path of [...walkFiles(dir)].sort()) {
-    let size: number
-    try {
-      size = statSync(path).size
-    } catch {
+    const scanned = scanFile(path)
+    if (!scanned) {
       stats.skipped++
       continue
     }
-    // A single file beyond the 50 GB ceiling cannot be reproduced as a
-    // large-image entry, so skip it rather than emit an un-revalidatable spec.
-    if (size > MAX_STREAM_BYTES) {
-      stats.skipped++
-      continue
-    }
-    // Files above the in-memory cap are read header-only (never loaded whole)
-    // and captured as disk-only large-image entries.
-    const large = size > MAX_PIXEL_BYTES
-    const record = large ? readHeaderOnly(path) : parseFull(path)
+    const { size, large, record } = scanned
     const studyUid = record?.StudyInstanceUID
     const seriesUid = record?.SeriesInstanceUID
     if (
@@ -662,14 +901,9 @@ export function describeDirectory(
     }
     stats.dicomFiles++
 
-    let modality: Modality | undefined
-    if (typeof record.Modality === 'string') {
-      if (SUPPORTED_MODALITIES.has(record.Modality as Modality)) {
-        modality = record.Modality as Modality
-      } else {
-        stats.unknownModality++
-      }
-    }
+    const preset = presetModalityOf(record)
+    if (preset === 'unsupported') stats.unknownModality++
+    const modality = preset === 'unsupported' ? undefined : preset
 
     const keptTags = keepKeywords.length
       ? extractTags(record, keepKeywords)
@@ -715,33 +949,16 @@ export function describeDirectory(
     ? (options.uidSalt ?? deriveSalt([...studies.keys()]))
     : undefined
   if (salt !== undefined) {
-    // A kept tag can collide with the sweep (e.g. a kept sequence that carries
-    // UID references); the hashed value wins — no original UID ever leaves —
-    // but the user asked for verbatim, so say what happened.
     const sweptKeepTags = new Set<string>()
     for (const study of studies.values()) {
       for (const series of study.values()) {
         if (!Array.isArray(series)) continue
         for (const rec of series) {
-          if (rec.uidOriginals) {
-            if (rec.tags) {
-              for (const keyword of Object.keys(rec.uidOriginals)) {
-                if (keyword in rec.tags) sweptKeepTags.add(keyword)
-              }
-            }
-            rec.tags = mergeTags(
-              rec.tags,
-              hashUidTags(rec.uidOriginals, salt, uidMap),
-            )
-          }
+          hashRecordUids(rec, salt, uidMap, sweptKeepTags)
         }
       }
     }
-    for (const keyword of sweptKeepTags) {
-      console.warn(
-        `describe: keep-tag "${keyword}" contains UID references — kept as its hashed UID skeleton, not verbatim (disable with preserveUids: false)`,
-      )
-    }
+    warnSweptKeepTags(sweptKeepTags)
   }
 
   // With preserveUids, emit the hashed group UIDs at study/series level (the

@@ -69,6 +69,9 @@ dicom-synth-describe ./real-dataset --size-tolerance 0.05 --out spec.json.gz
 
 # Shape only, freshly minted UIDs (no link preservation)
 dicom-synth-describe ./real-dataset --no-preserve-uids --out spec.json
+
+# Capture the real directory structure (anonymised) incl. sized non-DICOM files
+dicom-synth-describe ./real-dataset --tree --out spec.json
 ```
 
 | Flag | Effect |
@@ -78,6 +81,7 @@ dicom-synth-describe ./real-dataset --no-preserve-uids --out spec.json
 | `--keep-tags <a,b,...>` | Copy the named tags (keywords or 8-hex) verbatim; omit for shape only |
 | `--keep-tags-file <path>` | Same allow-list from a file (one tag per line, `#` comments); merged with `--keep-tags` |
 | `--size-tolerance <fraction>` | Fold near-identical file sizes (e.g. `0.05` = ±5%) into one entry; default exact. Normal images only — large files keep exact `targetBytes` |
+| `--tree` | Capture the real directory structure as a generic [`tree`](./schema-reference.md#generic-tree-tree) spec: anonymised names, sized non-DICOM placeholders included, grouping carried by hashed per-file UID tags. Cannot combine with `--no-preserve-uids`; `--size-tolerance` is ignored |
 | `--no-preserve-uids` | Disable UID link preservation (on by default); emit shape only with freshly minted UIDs |
 | `--uid-salt <hex>` | Pin the hashing salt to a specific namespace; when omitted the salt derives from the dataset's own study UIDs (reproducible, and disjoint across datasets). Cannot combine with `--no-preserve-uids` |
 | `--gzip` | Write the spec gzip-compressed (also inferred from a `.gz` `--out` suffix) |

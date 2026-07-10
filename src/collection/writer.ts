@@ -15,7 +15,7 @@ import type {
   TreeFileNode,
   TreeNode,
 } from '../schema/types.js'
-import { isImageType } from '../schema/validate.js'
+import { isImageType, positionalName } from '../schema/validate.js'
 import {
   buildBufferForSpec,
   sizedNonDicomBytes,
@@ -373,7 +373,7 @@ function* planTree(
   for (const node of nodes) {
     if (isDirNode(node)) {
       dirOrdinal++
-      const dirName = node.name ?? `dir-${String(dirOrdinal).padStart(3, '0')}`
+      const dirName = node.name ?? positionalName('dir', dirOrdinal)
       const child: TreeScope = {
         ...scope,
         dirs: [...scope.dirs, dirName],

@@ -6,7 +6,7 @@ import { describeDirectory } from '../dist/esm/index.js'
 
 function usage() {
   console.error(
-    'Usage: dicom-synth-describe <dir> [--out <spec.json[.gz]>] [--keep-tags <a,b,...>] [--keep-tags-file <path>] [--size-tolerance <fraction>] [--no-preserve-uids] [--uid-salt <hex>] [--gzip]\n' +
+    'Usage: dicom-synth-describe <dir> [--out <spec.json[.gz]>] [--tree] [--keep-tags <a,b,...>] [--keep-tags-file <path>] [--size-tolerance <fraction>] [--no-preserve-uids] [--uid-salt <hex>] [--gzip]\n' +
       '\n' +
       'Scans a DICOM tree and emits a DatasetSpec describing its shape\n' +
       '(studies/series, per-file size, modality).\n' +
@@ -14,6 +14,9 @@ function usage() {
       'UIDs are preserved by default as hash-derived synthetic UIDs, keeping\n' +
       'cross-file links (FrameOfReferenceUID etc.) without emitting any original\n' +
       'UID. Other tags are not copied unless named.\n' +
+      '--tree captures the real directory structure as a generic tree spec\n' +
+      '(anonymised names, sized non-DICOM placeholders included) instead of\n' +
+      'the compact studies/series form. Requires UID preservation.\n' +
       '--keep-tags copies the named tags (DICOM keywords or 8-hex tags)\n' +
       "verbatim; if a kept tag holds PHI, handling it is the caller's\n" +
       "responsibility, not this tool's.\n" +
@@ -48,6 +51,7 @@ let sizeTolerance
 let preserveUids = true
 let uidSalt
 let gzip = false
+let captureTree = false
 const keepTags = []
 
 for (let i = 0; i < args.length; i++) {
@@ -75,6 +79,8 @@ for (let i = 0; i < args.length; i++) {
     }
   } else if (args[i] === '--no-preserve-uids') {
     preserveUids = false
+  } else if (args[i] === '--tree') {
+    captureTree = true
   } else if (args[i] === '--uid-salt' && args[i + 1]) {
     uidSalt = args[++i]
   } else if (args[i] === '--gzip') {
@@ -104,6 +110,7 @@ try {
     ...(sizeTolerance !== undefined ? { sizeTolerance } : {}),
     preserveUids,
     ...(uidSalt !== undefined ? { uidSalt } : {}),
+    ...(captureTree ? { captureTree: true } : {}),
   })
 } catch (err) {
   console.error(`Error: ${err.message}`)
@@ -119,10 +126,15 @@ if (outPath) {
   process.stdout.write(compress ? gzipSync(json) : json)
 }
 
-const { dicomFiles, skipped, unknownModality } = result.stats
+const { dicomFiles, skipped, unknownModality, nonDicomFiles } = result.stats
 console.error(
   `Described ${dicomFiles} DICOM file(s); skipped ${skipped} non-DICOM/ungroupable file(s)`,
 )
+if (nonDicomFiles > 0) {
+  console.error(
+    `  ${nonDicomFiles} non-DICOM file(s) captured as sized placeholders`,
+  )
+}
 if (result.spec.uidSalt) {
   console.error(
     `  UIDs hash-derived with salt ${result.spec.uidSalt} (reuse via --uid-salt to reproduce)`,
