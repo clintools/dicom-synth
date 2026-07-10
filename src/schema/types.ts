@@ -42,7 +42,16 @@ export type VendorWarningsImageSpec = BaseImageSpec & {
   type: 'vendor-warnings-image'
 }
 export type FakeSignatureSpec = { type: 'fake-signature' }
-export type NonDicomSpec = { type: 'non-dicom'; content?: string }
+// Sizing: targetSizeKb XOR targetBytes (≤ 512 MB) emits deterministic
+// placeholder bytes at that size; content emits those exact bytes; omitting all
+// three emits a tiny fixed marker. Content is never read from real files —
+// sized reproduction is placeholder-only.
+export type NonDicomSpec = {
+  type: 'non-dicom'
+  content?: string
+  targetSizeKb?: number
+  targetBytes?: number
+}
 export type DicomdirSpec = { type: 'dicomdir' }
 
 // Disk-only: a single DICOM larger than the in-memory 512 MB cap (to ~50 GB),
@@ -110,6 +119,22 @@ export type StudySpec = {
   count?: number
 }
 
+// Generic directory tree: expresses any nesting of DICOM and non-DICOM files
+// explicitly (where `layout` only arranges grouped entries into a preset
+// shape). Grouping stays UID-driven: a `role`-marked directory mints one
+// shared Study/SeriesInstanceUID for the image files beneath it (series must
+// nest inside a study); explicit UID tags on a file still win. Directory
+// `tags` merge downward into image files. A node without `name` gets a
+// synthetic positional one.
+export type TreeFileNode = EntrySpec & { name?: string }
+export type TreeDirNode = {
+  name?: string
+  role?: 'study' | 'series'
+  tags?: DicomTagOverrides
+  children: TreeNode[]
+}
+export type TreeNode = TreeDirNode | TreeFileNode
+
 // hierarchical: grouped files written as study-NNN/series-NNN/NNNNN.dcm.
 export type DatasetLayout = 'flat' | 'hierarchical'
 
@@ -125,6 +150,7 @@ export type PathQuirk =
 export type DatasetSpec = {
   entries?: EntrySpec[]
   studies?: StudySpec[]
+  tree?: TreeNode[]
   seed?: number
   // Namespaces hash-derived UIDs (2.25.<digest>). Different salts give disjoint
   // UIDs across datasets; the same salt is reproducible. When omitted, UIDs

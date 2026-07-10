@@ -17,6 +17,7 @@ import type {
   SeriesSpec,
   StudySpec,
   TransferSyntax,
+  TreeNode,
   ViolationClass,
 } from './types.js'
 
@@ -30,6 +31,12 @@ const TYPE_CAPABILITIES = {
   'non-dicom': { image: false },
   dicomdir: { image: false },
 } as const satisfies Record<FileSpec['type'], { image: boolean }>
+
+// Image-generating types participate in UID grouping (studies/series and
+// role-marked tree directories); other types merely occupy their location.
+export function isImageType(type: FileSpec['type']): boolean {
+  return TYPE_CAPABILITIES[type].image
+}
 
 const VALID_MODALITIES = {
   CT: true,
@@ -102,10 +109,14 @@ function validateUidSalt(value: unknown, path: string): void {
   }
 }
 
-function validateSizeKbLimit(kb: number, path: string): void {
-  if (kb * 1024 > MAX_PIXEL_BYTES) {
+function validateInMemoryByteLimit(bytes: number, path: string): void {
+  if (bytes > MAX_PIXEL_BYTES) {
     throw new Error(`${path}: exceeds the 512 MB limit`)
   }
+}
+
+function validateSizeKbLimit(kb: number, path: string): void {
+  validateInMemoryByteLimit(kb * 1024, path)
 }
 
 function validateLargeTargetBytes(value: unknown, path: string): void {
@@ -152,6 +163,32 @@ function validateLargeImageEntry(
   if ('tags' in e) validateTags(e.tags, `${path}.tags`)
 }
 
+// non-dicom sizing: at most one of content / targetSizeKb / targetBytes.
+// Unlike large-image, targetBytes here is an exact in-memory size ≤ 512 MB.
+function validateNonDicomEntry(e: Record<string, unknown>, path: string): void {
+  const sizing = ['content', 'targetSizeKb', 'targetBytes'].filter(
+    (f) => f in e,
+  )
+  if (sizing.length > 1) {
+    throw new Error(
+      `${path}: "content", "targetSizeKb" and "targetBytes" are mutually exclusive`,
+    )
+  }
+  if ('content' in e && typeof e.content !== 'string') {
+    throw new Error(
+      `${path}.content: must be a string; got ${JSON.stringify(e.content)}`,
+    )
+  }
+  if ('targetSizeKb' in e) {
+    validatePositiveInt(e.targetSizeKb, `${path}.targetSizeKb`)
+    validateSizeKbLimit(e.targetSizeKb as number, `${path}.targetSizeKb`)
+  }
+  if ('targetBytes' in e) {
+    validatePositiveInt(e.targetBytes, `${path}.targetBytes`)
+    validateInMemoryByteLimit(e.targetBytes as number, `${path}.targetBytes`)
+  }
+}
+
 // Validates that `value` is a key of one of the VALID_* lookup tables, throwing
 // with the permitted values listed otherwise.
 function validateEnum(
@@ -190,6 +227,23 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
 
   if (type === 'large-image') {
     validateLargeImageEntry(e, path)
+    return e as unknown as EntrySpec
+  }
+
+  if (type === 'non-dicom') {
+    for (const field of [
+      'modality',
+      'rows',
+      'columns',
+      'frames',
+      'tags',
+      'violations',
+      'transferSyntax',
+    ] as const) {
+      if (field in e)
+        throw new Error(`${path}.${field}: not supported for type "${type}"`)
+    }
+    validateNonDicomEntry(e, path)
     return e as unknown as EntrySpec
   }
 
@@ -452,6 +506,128 @@ function validateStudy(study: unknown, path: string): StudySpec {
   return st as unknown as StudySpec
 }
 
+const VALID_TREE_ROLES = {
+  study: true,
+  series: true,
+} as const
+
+// A single path component written to disk verbatim — must not escape or
+// restructure the tree.
+function validateNodeName(value: unknown, path: string): void {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value === '.' ||
+    value === '..' ||
+    /[/\\]/.test(value)
+  ) {
+    throw new Error(
+      `${path}: must be a non-empty name without path separators; got ${JSON.stringify(value)}`,
+    )
+  }
+}
+
+function validateTreeNode(
+  node: unknown,
+  path: string,
+  inStudy: boolean,
+  inSeries: boolean,
+): void {
+  if (typeof node !== 'object' || node === null || Array.isArray(node)) {
+    throw new Error(`${path}: must be an object`)
+  }
+  const n = node as Record<string, unknown>
+
+  if ('children' in n) {
+    if ('type' in n) {
+      throw new Error(
+        `${path}: a node cannot have both "children" (directory) and "type" (file)`,
+      )
+    }
+    if ('name' in n) validateNodeName(n.name, `${path}.name`)
+    if ('tags' in n) validateTags(n.tags, `${path}.tags`)
+
+    let childStudy = inStudy
+    let childSeries = inSeries
+    if ('role' in n) {
+      validateEnum(n.role, VALID_TREE_ROLES, `${path}.role`)
+      if (n.role === 'study') {
+        if (inStudy) {
+          throw new Error(
+            `${path}.role: a study directory cannot nest inside another study`,
+          )
+        }
+        childStudy = true
+      } else {
+        if (!inStudy) {
+          throw new Error(
+            `${path}.role: a series directory requires an enclosing study-role directory`,
+          )
+        }
+        if (inSeries) {
+          throw new Error(
+            `${path}.role: a series directory cannot nest inside another series`,
+          )
+        }
+        childSeries = true
+      }
+    }
+
+    if (!Array.isArray(n.children) || n.children.length === 0) {
+      throw new Error(`${path}.children: must be a non-empty array`)
+    }
+    validateTreeChildren(
+      n.children,
+      `${path}.children`,
+      childStudy,
+      childSeries,
+    )
+    return
+  }
+
+  const e = validateEntry(node, path)
+  if ('name' in n) {
+    validateNodeName(n.name, `${path}.name`)
+    if ((e.count ?? 1) > 1) {
+      throw new Error(
+        `${path}: "name" cannot be combined with count > 1 — the copies would collide on one path`,
+      )
+    }
+  }
+}
+
+// Validates each sibling, then checks their effective on-disk names for
+// collisions: explicit names, plus the positional dir-NNN an unnamed directory
+// gets (same rule as the writer). Unnamed files are excluded — their synthetic
+// names carry a collection-wide index and cannot repeat.
+function validateTreeChildren(
+  children: unknown[],
+  basePath: string,
+  inStudy: boolean,
+  inSeries: boolean,
+): void {
+  const claimed = new Map<string, string>()
+  let dirOrdinal = 0
+  children.forEach((child, i) => {
+    const path = `${basePath}[${i}]`
+    validateTreeNode(child, path, inStudy, inSeries)
+    const n = child as Record<string, unknown>
+    let name = 'name' in n ? (n.name as string) : undefined
+    if ('children' in n) {
+      dirOrdinal++
+      name ??= `dir-${String(dirOrdinal).padStart(3, '0')}`
+    }
+    if (name === undefined) return
+    const prior = claimed.get(name)
+    if (prior !== undefined) {
+      throw new Error(
+        `${path}: name "${name}" collides with ${prior} — siblings must resolve to distinct paths`,
+      )
+    }
+    claimed.set(name, path)
+  })
+}
+
 export function validateDatasetSpec(raw: unknown): DatasetSpec {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     throw new Error('DatasetSpec: must be a JSON object')
@@ -465,12 +641,20 @@ export function validateDatasetSpec(raw: unknown): DatasetSpec {
   if ('studies' in r && !Array.isArray(r.studies)) {
     throw new Error('DatasetSpec.studies: must be an array')
   }
+  if ('tree' in r && !Array.isArray(r.tree)) {
+    throw new Error('DatasetSpec.tree: must be an array')
+  }
 
   const rawEntries = (r.entries as unknown[]) ?? []
   const rawStudies = (r.studies as unknown[]) ?? []
-  if (rawEntries.length === 0 && rawStudies.length === 0) {
+  const rawTree = (r.tree as unknown[]) ?? []
+  if (
+    rawEntries.length === 0 &&
+    rawStudies.length === 0 &&
+    rawTree.length === 0
+  ) {
     throw new Error(
-      'DatasetSpec: must contain at least one of "entries" or "studies" (non-empty)',
+      'DatasetSpec: must contain at least one of "entries", "studies" or "tree" (non-empty)',
     )
   }
 
@@ -480,6 +664,9 @@ export function validateDatasetSpec(raw: unknown): DatasetSpec {
   const studies = rawStudies.map((study, i) =>
     validateStudy(study, `studies[${i}]`),
   )
+  if (rawTree.length > 0) {
+    validateTreeChildren(rawTree, 'tree', false, false)
+  }
 
   if ('seed' in r) validateSeed(r.seed, 'DatasetSpec.seed')
 
@@ -501,6 +688,7 @@ export function validateDatasetSpec(raw: unknown): DatasetSpec {
   return {
     ...(entries.length > 0 ? { entries } : {}),
     ...(studies.length > 0 ? { studies } : {}),
+    ...(rawTree.length > 0 ? { tree: r.tree as TreeNode[] } : {}),
     ...(r.seed !== undefined ? { seed: r.seed as number } : {}),
     ...(r.uidSalt !== undefined ? { uidSalt: r.uidSalt as string } : {}),
     ...(r.layout !== undefined ? { layout: r.layout as DatasetLayout } : {}),

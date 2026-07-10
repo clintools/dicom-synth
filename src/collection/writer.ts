@@ -11,8 +11,15 @@ import type {
   PathQuirk,
   SeriesSpec,
   StudySpec,
+  TreeDirNode,
+  TreeFileNode,
+  TreeNode,
 } from '../schema/types.js'
-import { buildBufferForSpec } from '../syntheticFixtures/generator.js'
+import { isImageType } from '../schema/validate.js'
+import {
+  buildBufferForSpec,
+  sizedNonDicomBytes,
+} from '../syntheticFixtures/generator.js'
 import { streamLargeImage } from '../syntheticFixtures/streamWrite.js'
 import {
   resolveTagTemplates,
@@ -73,6 +80,19 @@ function studyFileCount(studies: StudySpec[]): number {
       sum +
       (study.count ?? 1) *
         study.series.reduce((s, series) => s + seriesFileCount(series), 0),
+    0,
+  )
+}
+
+function isDirNode(node: TreeNode): node is TreeDirNode {
+  return 'children' in node
+}
+
+function treeFileCount(nodes: TreeNode[]): number {
+  return nodes.reduce(
+    (sum, node) =>
+      sum +
+      (isDirNode(node) ? treeFileCount(node.children) : (node.count ?? 1)),
     0,
   )
 }
@@ -245,6 +265,16 @@ function applyPathQuirks(
   return { relativePath: [...dirs, newLeaf].join('/'), filename: newLeaf }
 }
 
+// The one seam through which every walk's names take their path quirks.
+function decorateNames(
+  names: { filename: string; relativePath: string },
+  quirks: PathQuirk[],
+): { filename: string; relativePath: string } {
+  return quirks.length === 0
+    ? names
+    : applyPathQuirks(names.relativePath, quirks)
+}
+
 // Grouped-file naming under layout: 'hierarchical'.
 function hierarchicalName(
   studyOrdinal: number,
@@ -311,9 +341,107 @@ function computeNames(
     const name = filename(type, index, padWidth)
     names = { filename: name, relativePath: name }
   }
-  return quirks.length === 0
-    ? names
-    : applyPathQuirks(names.relativePath, quirks)
+  return decorateNames(names, quirks)
+}
+
+// Walk scope for the tree structure: the directory chain plus the UID group
+// established by the nearest role-marked ancestors. The study object is shared
+// by reference down its subtree, so sibling series dirs draw distinct indices
+// from the one study counter.
+type TreeScope = {
+  dirs: string[]
+  tags: DicomTagOverrides
+  study?: { ordinal: number; uid: string; seriesCount: number }
+  series?: { index: number; uid: string; instanceCount: number }
+}
+
+type TreeEnv = {
+  groupUids: ReturnType<typeof makeGroupUidGenerator>
+  padWidth: number
+  quirks: PathQuirk[]
+  // Continues the studies-walk counters so tree-minted study UIDs and
+  // synthesised filenames stay disjoint from grouped-study ones.
+  counters: { file: number; study: number }
+}
+
+function* planTree(
+  nodes: TreeNode[],
+  scope: TreeScope,
+  env: TreeEnv,
+): Generator<FilePlan> {
+  let dirOrdinal = 0
+  for (const node of nodes) {
+    if (isDirNode(node)) {
+      dirOrdinal++
+      const dirName = node.name ?? `dir-${String(dirOrdinal).padStart(3, '0')}`
+      const child: TreeScope = {
+        ...scope,
+        dirs: [...scope.dirs, dirName],
+        tags: { ...scope.tags, ...node.tags },
+      }
+      if (node.role === 'study') {
+        const ordinal = env.counters.study++
+        child.study = {
+          ordinal,
+          uid: env.groupUids.study(ordinal),
+          seriesCount: 0,
+        }
+      } else if (node.role === 'series' && child.study) {
+        const index = child.study.seriesCount++
+        child.series = {
+          index,
+          uid: env.groupUids.series(child.study.ordinal, index),
+          instanceCount: 0,
+        }
+      }
+      yield* planTree(node.children, child, env)
+      continue
+    }
+
+    const { count = 1, name, ...fileSpec } = node as TreeFileNode
+    // Only image files join the UID group and take directory tags; other kinds
+    // merely occupy their place in the tree.
+    const image = isImageType(fileSpec.type)
+    for (let i = 0; i < count; i++) {
+      const index = env.counters.file++
+      const instanceNumber =
+        image && scope.series ? ++scope.series.instanceCount : undefined
+      const leaf = name ?? filename(fileSpec.type, index, env.padWidth)
+      const names = decorateNames(
+        { filename: leaf, relativePath: [...scope.dirs, leaf].join('/') },
+        env.quirks,
+      )
+      const tags: DicomTagOverrides | undefined = image
+        ? {
+            ...(instanceNumber !== undefined
+              ? { InstanceNumber: instanceNumber }
+              : {}),
+            ...scope.tags,
+            ...('tags' in fileSpec ? fileSpec.tags : undefined),
+          }
+        : undefined
+      yield {
+        fileSpec: (tags ? { ...fileSpec, tags } : fileSpec) as FileSpec,
+        index,
+        ...(image && scope.study
+          ? {
+              uidOverride: {
+                study: scope.study.uid,
+                ...(scope.series ? { series: scope.series.uid } : {}),
+              },
+            }
+          : {}),
+        context: {
+          index,
+          ...(scope.study ? { studyIndex: scope.study.ordinal } : {}),
+          ...(scope.series ? { seriesIndex: scope.series.index } : {}),
+          ...(instanceNumber !== undefined ? { instanceNumber } : {}),
+        },
+        filename: names.filename,
+        relativePath: names.relativePath,
+      }
+    }
+  }
 }
 
 // Walks the spec into per-file plans (no I/O, no buffers). Flat entries keep
@@ -322,7 +450,9 @@ function computeNames(
 function* planCollection(spec: DatasetSpec): Generator<FilePlan> {
   const flatEntries = spec.entries ?? []
   const studies = spec.studies ?? []
-  const totalFiles = entryCount(flatEntries) + studyFileCount(studies)
+  const tree = spec.tree ?? []
+  const totalFiles =
+    entryCount(flatEntries) + studyFileCount(studies) + treeFileCount(tree)
   const padWidth = String(totalFiles).length
   const hierarchical = spec.layout === 'hierarchical'
   const quirks = spec.pathQuirks ?? []
@@ -391,6 +521,19 @@ function* planCollection(spec: DatasetSpec): Generator<FilePlan> {
       studyOrdinal++
     }
   }
+
+  if (tree.length > 0) {
+    yield* planTree(
+      tree,
+      { dirs: [], tags: {} },
+      {
+        groupUids,
+        padWidth,
+        quirks,
+        counters: { file: globalIndex, study: studyOrdinal },
+      },
+    )
+  }
 }
 
 async function materialisePlan(
@@ -425,20 +568,27 @@ export type CollectionPreviewItem = {
   approxBytes: number
 }
 
-// Manifest preview for --dry-run: enumerates every file without writing. Large
-// entries report their targetBytes instead of being materialised (they cannot
-// be buffers), so a spec containing large-image can still be previewed.
+// Manifest preview for --dry-run: enumerates every file without writing.
+// Entries whose size the spec already states — large-image (cannot be a
+// buffer) and sized non-dicom (allocating up to 512 MB just to measure it) —
+// are reported without being materialised.
 export async function* previewCollection(
   spec: DatasetSpec,
 ): AsyncGenerator<CollectionPreviewItem> {
   const salt = effectiveSalt(spec)
   for (const plan of planCollection(spec)) {
-    if (plan.fileSpec.type === 'large-image') {
+    const knownBytes =
+      plan.fileSpec.type === 'large-image'
+        ? plan.fileSpec.targetBytes
+        : plan.fileSpec.type === 'non-dicom'
+          ? sizedNonDicomBytes(plan.fileSpec)
+          : undefined
+    if (knownBytes !== undefined) {
       yield {
         relativePath: plan.relativePath,
-        type: 'large-image',
+        type: plan.fileSpec.type,
         index: plan.index,
-        approxBytes: plan.fileSpec.targetBytes,
+        approxBytes: knownBytes,
       }
     } else {
       const file = await materialisePlan(plan, salt)

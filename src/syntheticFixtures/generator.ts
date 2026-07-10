@@ -6,6 +6,7 @@ import type {
   FileSpec,
   ImageSpec,
   Modality,
+  NonDicomSpec,
   TransferSyntax,
 } from '../schema/types.js'
 import { HEX_TAG_RE } from '../schema/validate.js'
@@ -218,8 +219,21 @@ function buildFakeSignatureBuffer(): Buffer {
   return buf
 }
 
-function buildNonDicomBuffer(content = 'not dicom'): Buffer {
-  return Buffer.from(content, 'utf8')
+// The exact byte size of a sized non-dicom placeholder, or undefined for the
+// content/marker forms — lets previews report the size without materialising.
+export function sizedNonDicomBytes(spec: NonDicomSpec): number | undefined {
+  return (
+    spec.targetBytes ??
+    (spec.targetSizeKb !== undefined ? spec.targetSizeKb * 1024 : undefined)
+  )
+}
+
+// Sized form emits deterministic placeholder bytes — real file content is
+// never reproduced.
+function buildNonDicomBuffer(spec: NonDicomSpec): Buffer {
+  const bytes = sizedNonDicomBytes(spec)
+  if (bytes !== undefined) return Buffer.alloc(bytes, 'not dicom ')
+  return Buffer.from(spec.content ?? 'not dicom', 'utf8')
 }
 
 export function buildBufferForSpec(spec: FileSpec, uid: UidSet): Buffer {
@@ -231,7 +245,7 @@ export function buildBufferForSpec(spec: FileSpec, uid: UidSet): Buffer {
     case 'fake-signature':
       return buildFakeSignatureBuffer()
     case 'non-dicom':
-      return buildNonDicomBuffer(spec.content)
+      return buildNonDicomBuffer(spec)
     case 'dicomdir':
       return buildDicomdirBuffer()
     case 'large-image':
