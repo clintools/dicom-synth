@@ -506,6 +506,13 @@ function validateStudy(study: unknown, path: string): StudySpec {
   return st as unknown as StudySpec
 }
 
+// The one positional-name convention for synthesised tree names: unnamed
+// directories (writer and validator must agree) and describe's anonymised
+// non-DICOM files.
+export function positionalName(prefix: string, ordinal: number): string {
+  return `${prefix}-${String(ordinal).padStart(3, '0')}`
+}
+
 const VALID_TREE_ROLES = {
   study: true,
   series: true,
@@ -615,7 +622,7 @@ function validateTreeChildren(
     let name = 'name' in n ? (n.name as string) : undefined
     if ('children' in n) {
       dirOrdinal++
-      name ??= `dir-${String(dirOrdinal).padStart(3, '0')}`
+      name ??= positionalName('dir', dirOrdinal)
     }
     if (name === undefined) return
     const prior = claimed.get(name)

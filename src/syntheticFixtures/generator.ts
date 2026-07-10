@@ -90,6 +90,21 @@ export function applyTagOverrides(
   }
 }
 
+// PS3.10 requires the file meta group to mirror the dataset's SOP identifiers.
+// A tag override that rewrites them (e.g. describe's hashed SOPInstanceUID)
+// must flow into the meta header too, or the two diverge.
+export function syncMetaWithDataset(
+  meta: Record<string, unknown>,
+  dataset: Record<string, unknown>,
+): void {
+  if (typeof dataset.SOPInstanceUID === 'string') {
+    meta.MediaStorageSOPInstanceUID = dataset.SOPInstanceUID
+  }
+  if (typeof dataset.SOPClassUID === 'string') {
+    meta.MediaStorageSOPClassUID = dataset.SOPClassUID
+  }
+}
+
 export function buildMeta(
   uid: UidSet,
   modality: Modality,
@@ -209,6 +224,7 @@ function buildImageBuffer(spec: ImageSpec, uid: UidSet): Buffer {
 
   // Sizing after tag overrides so the probe measures the final overhead.
   const meta = buildMeta(effectiveUid, modality, spec.transferSyntax)
+  syncMetaWithDataset(meta, dataset)
   applySizing(dataset, meta, spec)
   return serializeDict(meta, dataset)
 }

@@ -7,6 +7,7 @@ import {
   buildBaseImageDataset,
   buildMeta,
   serializeDict,
+  syncMetaWithDataset,
 } from './generator.js'
 import { makeUidGenerator, seedToSalt, type UidSet } from './uid.js'
 
@@ -117,6 +118,7 @@ function writeNative(
   const dataset = buildBaseImageDataset(uid, modality)
   // Tags first so our size-driven Rows/Columns/length always win.
   applyTagOverrides(dataset, tags)
+  syncMetaWithDataset(meta, dataset)
   dataset.Rows = dims.rows
   dataset.Columns = dims.columns
 
@@ -165,6 +167,7 @@ function writeEncapsulated(
   }
   const dataset = buildBaseImageDataset(uid, modality)
   applyTagOverrides(dataset, tags)
+  syncMetaWithDataset(meta, dataset)
   dataset.PixelData = [new Uint8Array([]).buffer, new Uint8Array([0, 0]).buffer]
   dataset._vrMap = { PixelData: 'OB' }
 

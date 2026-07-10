@@ -4,6 +4,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  statSync,
 } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -13,7 +14,7 @@ import { writeCollectionFromSpec } from '../src/collection/writer'
 import { describeDirectory, readHeaderOnly } from '../src/describe/describe'
 import type { DatasetSpec, SeriesEntrySpec } from '../src/schema/types'
 import { validateDatasetSpec } from '../src/schema/validate'
-import { parseNatural } from './helpers/dicom'
+import { parseNatural, parseWithMeta } from './helpers/dicom'
 
 const allEntries = (spec: DatasetSpec): SeriesEntrySpec[] =>
   (spec.studies ?? []).flatMap((s) =>
@@ -985,5 +986,186 @@ describe('describeDirectory — large files (opt-in)', () => {
       expect(entry.modality).toBe('PT')
     }
     expect(() => validateDatasetSpec(spec)).not.toThrow()
+  })
+})
+
+describe('describeDirectory — captureTree', () => {
+  // Mixed source tree: a root manifest, one study with two series plus a
+  // stray log, exercising nesting, grouping, and non-DICOM capture.
+  const treeSource: DatasetSpec = {
+    seed: 31,
+    tree: [
+      { type: 'non-dicom', name: 'manifest.csv', targetBytes: 64 },
+      {
+        name: 'siteA',
+        children: [
+          {
+            name: 'p1',
+            role: 'study',
+            children: [
+              { type: 'non-dicom', name: 'notes.log', targetBytes: 10 },
+              {
+                name: 'ct',
+                role: 'series',
+                children: [{ type: 'valid-image', targetSizeKb: 30, count: 2 }],
+              },
+              {
+                name: 'pt',
+                role: 'series',
+                children: [
+                  { type: 'valid-image', modality: 'PT', targetSizeKb: 20 },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+
+  let srcDir: string
+  let outDir: string
+  beforeEach(async () => {
+    srcDir = await mkdtemp(join(tmpdir(), 'describe-tree-'))
+    outDir = await mkdtemp(join(tmpdir(), 'describe-tree-out-'))
+    await writeCollectionFromSpec(treeSource, srcDir)
+  })
+  afterEach(async () => {
+    await rm(srcDir, { recursive: true, force: true })
+    await rm(outDir, { recursive: true, force: true })
+  })
+
+  type Dir = { children: unknown[] }
+  const dirsOf = (nodes: unknown[]): Dir[] =>
+    nodes.filter(
+      (n): n is Dir => typeof n === 'object' && n !== null && 'children' in n,
+    )
+  const filesOf = (nodes: unknown[]) =>
+    nodes.filter(
+      (n) => !(typeof n === 'object' && n !== null && 'children' in n),
+    ) as Record<string, unknown>[]
+
+  it('captures the tree anonymised, with grouping as hashed UID tags', () => {
+    const { spec, stats } = describeDirectory(srcDir, { captureTree: true })
+
+    expect(stats).toMatchObject({ dicomFiles: 3, nonDicomFiles: 2, skipped: 0 })
+    expect(spec.studies).toBeUndefined()
+    expect(spec.uidSalt).toBeTruthy()
+
+    const root = spec.tree ?? []
+    // Root: the manifest (anonymised, extension kept) plus one unnamed dir.
+    expect(filesOf(root)).toEqual([
+      { type: 'non-dicom', name: 'file-001.csv', targetBytes: 64 },
+    ])
+    const site = dirsOf(root)
+    expect(site).toHaveLength(1)
+    expect((site[0] as Record<string, unknown>).name).toBeUndefined()
+
+    const patient = dirsOf(site[0]!.children)[0] as Dir
+    expect(filesOf(patient.children)).toEqual([
+      { type: 'non-dicom', name: 'file-001.log', targetBytes: 10 },
+    ])
+
+    const [ct, pt] = dirsOf(patient.children)
+    const ctFiles = filesOf(ct!.children)
+    const ptFiles = filesOf(pt!.children)
+    expect(ctFiles).toHaveLength(2)
+    expect(ptFiles).toHaveLength(1)
+    expect(ptFiles[0]?.modality).toBe('PT')
+
+    // Grouping survives as hashed per-file UID tags: one study across both
+    // series, distinct series UIDs, unique SOP UIDs.
+    const tagsOf = (n: Record<string, unknown>) =>
+      n.tags as Record<string, string>
+    const all = [...ctFiles, ...ptFiles].map(tagsOf)
+    for (const t of all) {
+      expect(t.StudyInstanceUID).toMatch(/^2\.25\./)
+      expect(t.StudyInstanceUID).toBe(all[0]?.StudyInstanceUID)
+    }
+    expect(tagsOf(ctFiles[0]!).SeriesInstanceUID).toBe(
+      tagsOf(ctFiles[1]!).SeriesInstanceUID,
+    )
+    expect(tagsOf(ptFiles[0]!).SeriesInstanceUID).not.toBe(
+      tagsOf(ctFiles[0]!).SeriesInstanceUID,
+    )
+    expect(tagsOf(ctFiles[0]!).SOPInstanceUID).not.toBe(
+      tagsOf(ctFiles[1]!).SOPInstanceUID,
+    )
+
+    // Instance order survives without role markers: the source files'
+    // InstanceNumber is carried per node.
+    expect(ctFiles.map((n) => tagsOf(n).InstanceNumber)).toEqual([1, 2])
+  })
+
+  it('emits no original UID or name, and is deterministic', () => {
+    const sourceFile = readdirSync(srcDir, {
+      recursive: true,
+      withFileTypes: true,
+    }).find((e) => e.isFile() && e.name.endsWith('.dcm'))
+    const original = parseNatural(
+      readFileSync(join(sourceFile!.parentPath, sourceFile!.name)),
+    )
+
+    const { spec } = describeDirectory(srcDir, { captureTree: true })
+    const json = JSON.stringify(spec)
+    for (const keyword of [
+      'StudyInstanceUID',
+      'SeriesInstanceUID',
+      'SOPInstanceUID',
+    ]) {
+      expect(json).not.toContain(original[keyword] as string)
+    }
+    for (const name of ['siteA', 'p1', 'ct', 'manifest', 'notes']) {
+      expect(json).not.toContain(name)
+    }
+
+    const again = describeDirectory(srcDir, { captureTree: true })
+    expect(JSON.stringify(again.spec)).toBe(json)
+  })
+
+  it('regenerates the captured tree faithfully', async () => {
+    const { spec } = describeDirectory(srcDir, { captureTree: true })
+    await writeCollectionFromSpec(spec, outDir)
+
+    const files = readdirSync(outDir, { recursive: true, withFileTypes: true })
+      .filter((e) => e.isFile())
+      .map((e) => ({
+        rel: join(e.parentPath, e.name).slice(outDir.length + 1),
+        path: join(e.parentPath, e.name),
+      }))
+      .sort((a, b) => a.rel.localeCompare(b.rel))
+
+    // Same shape: 3 DICOM + 2 sized placeholders, nested three levels deep.
+    const dcm = files.filter((f) => f.rel.endsWith('.dcm'))
+    const other = files.filter((f) => !f.rel.endsWith('.dcm'))
+    expect(dcm).toHaveLength(3)
+    expect(
+      other.map((f) => [f.rel.split('/').pop(), statSync(f.path).size]).sort(),
+    ).toEqual([
+      ['file-001.csv', 64],
+      ['file-001.log', 10],
+    ])
+
+    // Grouping reproduced: two series in one study, CT pair shares a series.
+    const parsed = dcm.map((f) => parseWithMeta(readFileSync(f.path)))
+    const naturals = parsed.map((p) => p.dataset)
+    const studyUids = new Set(naturals.map((n) => n.StudyInstanceUID))
+    const seriesUids = new Set(naturals.map((n) => n.SeriesInstanceUID))
+    expect(studyUids.size).toBe(1)
+    expect(seriesUids.size).toBe(2)
+
+    // The file meta group mirrors the hashed dataset identifiers (PS3.10) and
+    // instance order survives.
+    for (const { meta, dataset } of parsed) {
+      expect(meta.MediaStorageSOPInstanceUID).toBe(dataset.SOPInstanceUID)
+      expect(meta.MediaStorageSOPClassUID).toBe(dataset.SOPClassUID)
+    }
+    expect(naturals.map((n) => n.InstanceNumber).sort()).toEqual([1, 1, 2])
+  })
+
+  it('rejects captureTree without preserveUids', () => {
+    expect(() =>
+      describeDirectory(srcDir, { captureTree: true, preserveUids: false }),
+    ).toThrow(/captureTree requires preserveUids/)
   })
 })

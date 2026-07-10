@@ -8,7 +8,7 @@
 import { describeDirectory, writeCollectionFromSpec } from 'dicom-synth'
 
 const { spec, stats } = describeDirectory('./real-dataset')
-// stats: { dicomFiles, skipped, unknownModality }
+// stats: { dicomFiles, skipped, unknownModality, nonDicomFiles }
 await writeCollectionFromSpec(spec, './reproduced')
 ```
 
@@ -40,7 +40,15 @@ await writeCollectionFromSpec(spec, './reproduced')
 
   - **`uidSalt`** namespaces the hash. When omitted it is **derived from the dataset's own study UIDs**, so a given tree always produces the same synthetic UIDs (reproducible), while different datasets get **disjoint** UID namespaces automatically — no coordination needed. Pass an explicit salt only to force a specific namespace. The salt used is always recorded on the emitted spec.
   - the sweep covers scalar, multi-valued, and **sequence-nested** UID attributes. A sequence containing UID references (e.g. `SourceImageSequence` → `ReferencedSOPInstanceUID`, or the two-level `ReferencedSeriesSequence` → `ReferencedSOPSequence`) is **pruned to a UID-only reference skeleton**: its UID-valued fields are kept (hashed, or verbatim for well-known class UIDs) and every other field is dropped, so image-to-image references survive regeneration without copying any other sequence content. Sequences and items with no hashable UID are dropped entirely.
-- Non-DICOM, unparseable, or ungroupable files (missing study/series UIDs) are skipped and counted. An unsupported `Modality` is emitted as the default (CT) and counted.
+- <a id="capturetree"></a>**`captureTree`** (default `false`) captures the **real directory structure** as a generic [`tree`](./schema-reference.md#generic-tree-tree) spec instead of the compact studies/series form. Everything identifying is anonymised by construction: directories are unnamed (regenerated as positional `dir-NNN`), DICOM files take synthetic names, and non-DICOM files become `file-NNN` keeping only a short alphanumeric extension (`.csv`, `.log`) — no original name ever leaves the dataset. Grouping still survives without the tree having to align with it: every DICOM node carries its hashed `StudyInstanceUID`/`SeriesInstanceUID` as tags. Requires `preserveUids` (the default); `sizeTolerance` is ignored (one node per file — nothing to fold).
+
+  ```ts
+  const { spec, stats } = describeDirectory('./real-dataset', { captureTree: true })
+  // spec.tree mirrors the on-disk nesting; stats.nonDicomFiles counts placeholders
+  ```
+
+  - **Non-DICOM files are captured, not skipped**: each becomes a sized `non-dicom` placeholder (`targetBytes` = exact size; content is never read or reproduced), counted in `stats.nonDicomFiles`. A non-DICOM file over 512 MB cannot be reproduced as a placeholder and is skipped.
+- Without `captureTree`: non-DICOM, unparseable, or ungroupable files (missing study/series UIDs) are skipped and counted. An unsupported `Modality` is emitted as the default (CT) and counted.
 - Files larger than 512 MB are captured as [`large-image`](./schema-reference.md#large-image-entry--a-large-file-inside-a-dataset) entries (sized by `targetBytes`). They are read **header-only** — the pixel data is never loaded — so a multi-GB file is described without OOM. A file is skipped and counted if its header cannot be read this way: implicit-VR encoding, or metadata before the PixelData element exceeding ~2 MB. A single file beyond the 50 GB ceiling is also skipped (it cannot be reproduced).
 
 ```ts
