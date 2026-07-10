@@ -1,3 +1,10 @@
+# [1.15.0](https://github.com/clintools/dicom-synth/compare/v1.14.0...v1.15.0) (2026-07-10)
+
+
+### Features
+
+* add generic directory-tree structure and sized non-DICOM files ([b47be25](https://github.com/clintools/dicom-synth/commit/b47be25a9b74efbf4c13e7cff3321980ead2b00f))
+
 # [1.14.0](https://github.com/clintools/dicom-synth/compare/v1.13.0...v1.14.0) (2026-07-09)
 
 
