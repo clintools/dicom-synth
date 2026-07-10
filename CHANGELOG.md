@@ -1,3 +1,15 @@
+# [1.16.0](https://github.com/clintools/dicom-synth/compare/v1.15.0...v1.16.0) (2026-07-10)
+
+
+### Bug Fixes
+
+* mirror overridden SOP identifiers in the file meta header ([c7f7368](https://github.com/clintools/dicom-synth/commit/c7f7368ca98ca9121579b56cca2a0bfe69b18201))
+
+
+### Features
+
+* capture the real directory tree in describe ([3e0cab0](https://github.com/clintools/dicom-synth/commit/3e0cab0d531dee9861f02c5954c309b23512f80e))
+
 # [1.15.0](https://github.com/clintools/dicom-synth/compare/v1.14.0...v1.15.0) (2026-07-10)
 
 
