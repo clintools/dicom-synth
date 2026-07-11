@@ -117,8 +117,8 @@ function writeNative(
   const meta = buildMeta(uid, modality)
   const dataset = buildBaseImageDataset(uid, modality)
   // Tags first so our size-driven Rows/Columns/length always win.
-  applyTagOverrides(dataset, tags)
-  syncMetaWithDataset(meta, dataset)
+  const rawElements = applyTagOverrides(dataset, tags)
+  syncMetaWithDataset(meta, dataset, rawElements)
   dataset.Rows = dims.rows
   dataset.Columns = dims.columns
 
@@ -128,7 +128,7 @@ function writeNative(
   // length(4) — so a decoy byte sequence inside an earlier element's value (e.g.
   // OW OverlayData) cannot be mistaken for it.
   const minimalPixelBytes = (dataset.PixelData as ArrayBuffer).byteLength
-  const probe = serializeDict(meta, dataset)
+  const probe = serializeDict(meta, dataset, rawElements)
   const pixelElement = Buffer.alloc(12)
   PIXEL_DATA_OW_HEADER.copy(pixelElement)
   pixelElement.writeUInt32LE(minimalPixelBytes, 8)
@@ -166,12 +166,12 @@ function writeEncapsulated(
     TransferSyntaxUID: RLE_TRANSFER_SYNTAX_UID,
   }
   const dataset = buildBaseImageDataset(uid, modality)
-  applyTagOverrides(dataset, tags)
-  syncMetaWithDataset(meta, dataset)
+  const rawElements = applyTagOverrides(dataset, tags)
+  syncMetaWithDataset(meta, dataset, rawElements)
   dataset.PixelData = [new Uint8Array([]).buffer, new Uint8Array([0, 0]).buffer]
   dataset._vrMap = { PixelData: 'OB' }
 
-  const probe = serializeDict(meta, dataset)
+  const probe = serializeDict(meta, dataset, rawElements)
   const idx = probe.indexOf(PIXEL_DATA_OB_HEADER)
   if (idx < 0 || probe.readUInt32LE(idx + 8) !== 0xffffffff) {
     throw new Error('failed to locate encapsulated PixelData element header')

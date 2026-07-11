@@ -183,11 +183,12 @@ export async function generateFile(
         }
       : spec
 
-  let buffer = buildBufferForSpec(resolvedSpec, uid)
+  const built = buildBufferForSpec(resolvedSpec, uid)
+  let buffer = built.buffer
 
   const violations = 'violations' in spec ? spec.violations : undefined
   if (violations?.length) {
-    buffer = applyViolations(buffer, violations)
+    buffer = applyViolations(buffer, violations, built.rawElements)
   }
 
   const name = filename(spec.type, index, padWidth)

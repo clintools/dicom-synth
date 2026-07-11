@@ -339,12 +339,54 @@ Available on all image types.
 }
 ```
 
-Keys are either DICOM keyword names (PascalCase, e.g. `"PatientID"`) or 8-hex-character tag strings (e.g. `"00080060"`). Unknown hex tags produce a console warning and are skipped.
+Keys are either DICOM keyword names (PascalCase, e.g. `"PatientID"`) or 8-hex-character tag strings (e.g. `"00080060"`). A hex tag with a plain value must exist in the DICOM dictionary (its VR comes from there) — an unknown one throws at generation and needs the [raw form](#private-tags-and-deliberate-mis-encodings-raw-form) instead.
 
 A **preset** modality (`CT`/`PT`/`MR`/`CR`) cannot be set through `tags` — it is coupled to `SOPClassUID` and the modality type-1 attributes, so it is set via the [`modality`](#modality-presets-modality) field instead, and supplying it in `tags` fails validation. Non-preset modalities (e.g. `US`, `NM`) have no preset, so `tags` stays their only route and is permitted.
 
 ```ts
 import type { DicomTagOverrides } from 'dicom-synth'
+```
+
+### Private tags and deliberate mis-encodings (raw form)
+
+A hex-tag key may take a **raw element form** — `{ "vr": …, "value": … }` — written verbatim into the file with the declared VR, bypassing the DICOM dictionary. This is how to reproduce the messy parts of real datasets:
+
+- **Private/vendor tags** (odd group number) have no dictionary entry, so they *require* the raw form. Reserve the block with a private creator element first, per the usual convention:
+
+  ```json
+  {
+    "type": "valid-image",
+    "tags": {
+      "00090010": { "vr": "LO", "value": "ACME_SYNTH" },
+      "00091001": { "vr": "SH", "value": "SYNTH-A" },
+      "00091002": { "vr": "DS", "value": ["1.5", "2.5"] },
+      "00091003": { "vr": "SQ", "value": [
+        { "00091004": { "vr": "SH", "value": "NESTED" } }
+      ] }
+    }
+  }
+  ```
+
+- **Deliberate mis-encodings** on standard tags — the raw form on an even-group (dictionary) tag overrides the naturalised element verbatim, so a wrong VR or an over-length value is reproducible:
+
+  ```json
+  { "00081030": { "vr": "DS", "value": "123" } }
+  { "00081090": { "vr": "LO", "value": "…65+ characters…" } }
+  ```
+
+Rules and behaviour:
+
+- `value` may be a scalar or an array (multiplicity). For `vr: "SQ"` it is an array of items, each a map of 8-hex tags to nested raw forms.
+- `vr` must be a standard DICOM VR code (`UN` included). The raw form is rejected on keyword keys; conversely a plain value is rejected on a private tag.
+- The [modality coupling guard](#tag-overrides-tags) applies to the raw form too: a preset modality (`CT`/`PT`/`MR`/`CR`) cannot be set via `00080060` in either form — use the `modality` field.
+- A raw override of `00080016`/`00080018` (SOP Class/Instance UID) mirrors into the file meta header, exactly like the keyword forms — the dataset and meta stay consistent.
+- Placeholder tokens (`{index}` etc.) are **not** resolved inside raw-form values.
+- Raw elements survive combination with [`violations`](#violation-injection-violations); no creator-block conformance is enforced — fixtures may be deliberately non-conformant.
+- The generator does not police value/VR compatibility: an incompatible pair either writes verbatim (the point) or surfaces dcmjs's write error as-is.
+- **Streamed `large-image` limitations:** on the encapsulated (>~4 GB) path, any element whose tag sorts after `PixelData` (`7FE0,0010` — e.g. the `7FE1` private pixel groups) is silently omitted; the native (≤4 GB) path preserves such elements after the pixel payload. Large tag payloads also widen how far a streamed file overshoots its approximate `targetBytes`.
+
+```ts
+import type { RawTagValue } from 'dicom-synth'
 ```
 
 ### Templated tag values

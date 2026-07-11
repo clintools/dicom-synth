@@ -11,6 +11,13 @@ const dcmjsAny = dcmjs as unknown as {
   }
 }
 
+function toArrayBuffer(buffer: Buffer): ArrayBuffer {
+  return buffer.buffer.slice(
+    buffer.byteOffset,
+    buffer.byteOffset + buffer.byteLength,
+  ) as ArrayBuffer
+}
+
 // Parse a generated DICOM buffer into a naturalised (keyword-keyed) dataset.
 export function parseNatural(buffer: Buffer): Record<string, unknown> {
   return parseWithMeta(buffer).dataset
@@ -21,13 +28,18 @@ export function parseWithMeta(buffer: Buffer): {
   meta: Record<string, unknown>
   dataset: Record<string, unknown>
 } {
-  const ab = buffer.buffer.slice(
-    buffer.byteOffset,
-    buffer.byteOffset + buffer.byteLength,
-  ) as ArrayBuffer
-  const parsed = dcmjsAny.data.DicomMessage.readFile(ab)
+  const parsed = dcmjsAny.data.DicomMessage.readFile(toArrayBuffer(buffer))
   return {
     meta: dcmjsAny.data.DicomMetaDictionary.naturalizeDataset(parsed.meta),
     dataset: dcmjsAny.data.DicomMetaDictionary.naturalizeDataset(parsed.dict),
   }
+}
+
+export type RawDictElement = { vr: string; Value?: unknown[] }
+
+// The un-naturalised dict, keyed by 8-hex tag — the only faithful view of
+// private elements and deliberate mis-encodings (naturalisation drops VRs).
+export function parseRawDict(buffer: Buffer): Record<string, RawDictElement> {
+  return dcmjsAny.data.DicomMessage.readFile(toArrayBuffer(buffer))
+    .dict as Record<string, RawDictElement>
 }

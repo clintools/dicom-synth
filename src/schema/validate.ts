@@ -77,6 +77,115 @@ const VALID_VIOLATIONS = {
 export const HEX_TAG_RE = /^[0-9a-fA-F]{8}$/
 const KEYWORD_RE = /^[A-Z][A-Za-z0-9]*$/
 
+// Standard DICOM VR codes per PS3.5 section 6.2 (complete as of 2019, when
+// UV/SV/OV were added — the registry changes roughly once a decade). The list
+// exists only to catch typos early: without it, dcmjs substitutes UN or
+// crashes cryptically at write time. If the standard ever adds a VR, a valid
+// spec fails HERE with a clear message — extend this set.
+const VALID_VRS = new Set([
+  'AE',
+  'AS',
+  'AT',
+  'CS',
+  'DA',
+  'DS',
+  'DT',
+  'FL',
+  'FD',
+  'IS',
+  'LO',
+  'LT',
+  'OB',
+  'OD',
+  'OF',
+  'OL',
+  'OV',
+  'OW',
+  'PN',
+  'SH',
+  'SL',
+  'SQ',
+  'SS',
+  'ST',
+  'SV',
+  'TM',
+  'UC',
+  'UI',
+  'UL',
+  'UN',
+  'UR',
+  'US',
+  'UT',
+  'UV',
+])
+
+// A private tag has an odd group number; it has no dictionary entry, so its
+// VR must be declared via the raw form.
+function isPrivateHexTag(key: string): boolean {
+  return HEX_TAG_RE.test(key) && Number.parseInt(key.slice(0, 4), 16) % 2 === 1
+}
+
+// Structural raw-form detection: a plain object carrying a string `vr`.
+// Validation pins the exact shape; the generator uses the same predicate.
+export function isRawTagValue(
+  value: unknown,
+): value is { vr: string; value: unknown } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof (value as Record<string, unknown>).vr === 'string'
+  )
+}
+
+// The raw form: { vr, value } exactly — vr from the standard VR list, and for
+// SQ the value is an array of items, each a map of hex tags to nested raw
+// forms. Runs recursively so a malformed nested element fails with its path.
+function validateRawTagValue(raw: Record<string, unknown>, path: string): void {
+  for (const key of Object.keys(raw)) {
+    if (key !== 'vr' && key !== 'value') {
+      throw new Error(
+        `${path}: raw tag form accepts only "vr" and "value"; got "${key}"`,
+      )
+    }
+  }
+  const vr = raw.vr as string
+  if (!VALID_VRS.has(vr)) {
+    throw new Error(`${path}.vr: "${vr}" is not a standard DICOM VR`)
+  }
+  if (!('value' in raw)) {
+    throw new Error(`${path}.value: is required in the raw tag form`)
+  }
+  if (vr === 'SQ') {
+    if (!Array.isArray(raw.value)) {
+      throw new Error(`${path}.value: an SQ raw tag requires an array of items`)
+    }
+    raw.value.forEach((item, i) => {
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+        throw new Error(
+          `${path}.value[${i}]: must be an object of hex-tag entries`,
+        )
+      }
+      for (const [tag, nested] of Object.entries(item)) {
+        if (!HEX_TAG_RE.test(tag)) {
+          throw new Error(
+            `${path}.value[${i}]: invalid item tag "${tag}" — SQ items use 8-hex-char tags`,
+          )
+        }
+        if (!isRawTagValue(nested)) {
+          throw new Error(
+            `${path}.value[${i}].${tag}: SQ item entries must use the raw { vr, value } form`,
+          )
+        }
+        validateRawTagValue(
+          nested as Record<string, unknown>,
+          `${path}.value[${i}].${tag}`,
+        )
+      }
+    })
+  }
+}
+
 function validatePositiveInt(value: unknown, path: string): void {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
     throw new Error(
@@ -328,18 +437,46 @@ const MODALITY_TAG = '00080060'
 // Non-preset modalities (e.g. US, NM) have no preset, so tags stays their only
 // route and is allowed. Only validateDatasetSpec enforces this; the low-level
 // generateFile primitive trusts its input.
-// A single tag value (scalar, or one element of a per-instance array).
-function validateTagValue(key: string, value: unknown, path: string): void {
+// Applies to plain and raw forms alike — the raw escape hatch does not exempt
+// the modality coupling: a preset value written raw would desync
+// SOPClassUID/type-1 attributes just the same.
+function validateModalityGuard(
+  key: string,
+  candidate: unknown,
+  path: string,
+): void {
   const isModalityKey = key === 'Modality' || key.toUpperCase() === MODALITY_TAG
   if (
     isModalityKey &&
-    typeof value === 'string' &&
-    Object.hasOwn(VALID_MODALITIES, value)
+    typeof candidate === 'string' &&
+    Object.hasOwn(VALID_MODALITIES, candidate)
   ) {
     throw new Error(
       `${path}.${key}: set a preset modality (${Object.keys(VALID_MODALITIES).join('/')}) via the "modality" field, not tags — it is coupled to SOPClassUID and type-1 attributes`,
     )
   }
+}
+
+// A single tag value (scalar, or one element of a per-instance array).
+function validateTagValue(key: string, value: unknown, path: string): void {
+  if (isRawTagValue(value)) {
+    if (!HEX_TAG_RE.test(key)) {
+      throw new Error(
+        `${path}.${key}: the raw { vr, value } form requires an 8-hex-char tag key — keyword tags take plain values`,
+      )
+    }
+    validateRawTagValue(value as Record<string, unknown>, `${path}.${key}`)
+    const raw = (value as { value: unknown }).value
+    const scalar = Array.isArray(raw) && raw.length === 1 ? raw[0] : raw
+    validateModalityGuard(key, scalar, path)
+    return
+  }
+  if (isPrivateHexTag(key)) {
+    throw new Error(
+      `${path}.${key}: private tags have no dictionary VR — use the raw form, e.g. { "vr": "LO", "value": … }`,
+    )
+  }
+  validateModalityGuard(key, value, path)
   if (typeof value === 'string') {
     for (const name of findTemplateTokens(value)) {
       if (!(TEMPLATE_VOCAB as readonly string[]).includes(name)) {

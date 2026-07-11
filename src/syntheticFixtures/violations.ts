@@ -1,5 +1,6 @@
 import { dcmjs } from '../loadDcmjs.js'
 import type { ViolationClass } from '../schema/types.js'
+import type { RawElementMap } from './generator.js'
 
 const dcmjsAny = dcmjs as unknown as {
   data: {
@@ -49,7 +50,11 @@ const VIOLATION_LEVEL = {
   'malformed-sq-delimiter': 'byte',
 } as const satisfies Record<ViolationClass, 'tag' | 'byte'>
 
-function applyTagLevel(buffer: Buffer, violations: ViolationClass[]): Buffer {
+function applyTagLevel(
+  buffer: Buffer,
+  violations: ViolationClass[],
+  rawElements?: RawElementMap,
+): Buffer {
   if (violations.length === 0) return buffer
 
   let parsed: ReturnType<typeof parseBuffer>
@@ -92,6 +97,14 @@ function applyTagLevel(buffer: Buffer, violations: ViolationClass[]): Buffer {
   }
 
   parsed.dict = dcmjsAny.data.DicomMetaDictionary.denaturalizeDataset(natural)
+
+  // The naturalise→denaturalise round-trip drops raw-injected elements
+  // (private tags, mis-encodings) — re-apply them so a violated file keeps
+  // both. Applied before uid-too-long so an explicitly requested violation
+  // still wins on a clashing tag.
+  if (rawElements) {
+    Object.assign(parsed.dict as Record<string, unknown>, rawElements)
+  }
 
   // denaturalizeDataset truncates over-length UI values to 64 chars regardless of
   // allowInvalidVRLength (that option only governs the write stage), so the
@@ -138,11 +151,15 @@ function applyByteLevel(buffer: Buffer, violations: ViolationClass[]): Buffer {
 export function applyViolations(
   buffer: Buffer,
   violations: ViolationClass[],
+  rawElements?: RawElementMap,
 ): Buffer {
   if (violations.length === 0) return buffer
 
   const tagViolations = violations.filter((v) => VIOLATION_LEVEL[v] === 'tag')
   const byteViolations = violations.filter((v) => VIOLATION_LEVEL[v] === 'byte')
 
-  return applyByteLevel(applyTagLevel(buffer, tagViolations), byteViolations)
+  return applyByteLevel(
+    applyTagLevel(buffer, tagViolations, rawElements),
+    byteViolations,
+  )
 }
