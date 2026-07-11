@@ -1,3 +1,10 @@
+# [1.17.0](https://github.com/clintools/dicom-synth/compare/v1.16.0...v1.17.0) (2026-07-11)
+
+
+### Features
+
+* generate private tags and mis-encoded elements via a raw tag form ([4288833](https://github.com/clintools/dicom-synth/commit/42888333bff5a891565577fb9a59b955d01ce6a9))
+
 # [1.16.0](https://github.com/clintools/dicom-synth/compare/v1.15.0...v1.16.0) (2026-07-10)
 
 
