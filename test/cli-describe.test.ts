@@ -1,16 +1,14 @@
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { writeCollectionFromSpec } from '../src/collection/writer'
 import { validateDatasetSpec } from '../src/schema/validate'
+import { hasBuild, repoRoot } from './helpers/cliBuild'
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const hasBuild = existsSync(join(repoRoot, 'dist/esm/index.js'))
 const bin = join(repoRoot, 'bin/dicom-synth-describe.mjs')
 
 function run(args: string[]): Promise<number> {

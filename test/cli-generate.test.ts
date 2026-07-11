@@ -2,12 +2,10 @@ import { spawn } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join, relative } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { hasBuild, repoRoot } from './helpers/cliBuild'
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const hasBuild = existsSync(join(repoRoot, 'dist/esm/index.js'))
 const bin = join(repoRoot, 'bin/dicom-synth-generate.mjs')
 const defaultSchema = join(repoRoot, 'examples/default.json')
 const parametricSchema = join(repoRoot, 'examples/parametric.json')

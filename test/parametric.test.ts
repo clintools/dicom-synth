@@ -243,6 +243,17 @@ describe('validateParametricSpec — invalid inputs', () => {
     studies: { count: 1, seriesPerStudy: 1, filesPerSeries: 1 },
   }
 
+  it('rejects non-object input', () => {
+    expect(() => validateParametricSpec(null)).toThrow(/must be a JSON object/)
+    expect(() => validateParametricSpec([])).toThrow(/must be a JSON object/)
+  })
+
+  it('rejects a non-array edgeCases', () => {
+    expect(() =>
+      validateParametricSpec({ ...valid, edgeCases: 'invalid-uid-image' }),
+    ).toThrow(/edgeCases: must be an array/)
+  })
+
   it('rejects a missing studies block', () => {
     expect(() => validateParametricSpec({})).toThrow(/studies.*required/)
   })
