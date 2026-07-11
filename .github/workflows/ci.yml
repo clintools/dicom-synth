@@ -35,8 +35,10 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Test
-        run: pnpm test
-
+      # Build must precede Test: the CLI suites spawn the bins, which import
+      # from dist/esm and fail loudly in CI when it is missing.
       - name: Build
         run: pnpm build
+
+      - name: Test (with coverage gate)
+        run: pnpm test:coverage
