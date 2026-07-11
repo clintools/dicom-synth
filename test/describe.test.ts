@@ -504,6 +504,17 @@ describe('describeDirectory', () => {
       await rm(empty, { recursive: true, force: true })
     }
   })
+
+  it('throws when captureTree finds no files at all', async () => {
+    const empty = await mkdtemp(join(tmpdir(), 'describe-tree-empty-'))
+    try {
+      expect(() => describeDirectory(empty, { captureTree: true })).toThrow(
+        /no files found/,
+      )
+    } finally {
+      await rm(empty, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('describeDirectory — preserveUids (hash-derived links)', () => {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,7 +9,9 @@ import {
   defaultPublicCasesPath,
   fetchPublicCaseToCache,
   loadCaseById,
+  loadCasesFromJson,
   loadDefaultCases,
+  type PublicCaseRecord,
   verifySha256,
 } from '../src'
 
@@ -30,6 +32,17 @@ describe('public corpus catalog', () => {
     expect(() =>
       loadCaseById(defaultPublicCasesPath(), 'does-not-exist'),
     ).toThrow(/Unknown case id/)
+  })
+
+  it('loadCasesFromJson throws on a catalog without a cases array', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'catalog-invalid-'))
+    try {
+      const path = join(dir, 'cases.json')
+      writeFileSync(path, JSON.stringify({ notCases: [] }))
+      expect(() => loadCasesFromJson(path)).toThrow(/expected "cases" array/)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('caseCachePath is stable under a custom root', () => {
@@ -80,6 +93,18 @@ describe('fetchPublicCaseToCache', () => {
       globalThis.fetch = originalFetch
       await rm(cacheRoot, { recursive: true, force: true })
     }
+  })
+
+  it('rejects non-url sources', async () => {
+    const record: PublicCaseRecord = {
+      id: 'private-case',
+      violation_class: 'any',
+      sha256: 'a'.repeat(64),
+      source: { kind: 's3', bucket: 'bucket', key: 'key' },
+    }
+    await expect(fetchPublicCaseToCache(record)).rejects.toThrow(
+      /only url sources/,
+    )
   })
 
   it('throws on HTTP error', async () => {
