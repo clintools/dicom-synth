@@ -2,12 +2,21 @@ export type TransferSyntax =
   | 'explicit-vr-little-endian'
   | 'implicit-vr-little-endian'
 
+// Raw element form, valid only on 8-hex-char tag keys: written verbatim into
+// the serialised dict with the declared VR. The route for private tags (which
+// have no dictionary entry) and for deliberate mis-encodings of standard tags
+// (wrong VR, over-length values). For vr "SQ", `value` is an array of items,
+// each a map of 8-hex tags to further RawTagValue entries.
+export type RawTagValue = { vr: string; value: unknown }
+
 export type DicomTagOverrides = {
   PatientID?: string
   PatientName?: string
   StudyDescription?: string
   SeriesDescription?: string
-  // Or any other DICOM keyword name (e.g. "Modality") or 8-hex-char tag (e.g. "00080060")
+  // Or any other DICOM keyword name (e.g. "Modality") or 8-hex-char tag
+  // (e.g. "00080060"). Hex keys also accept the RawTagValue form; private
+  // (odd-group) hex keys require it.
   [tag: string]: unknown
 }
 

@@ -51,6 +51,7 @@ export type {
   ParametricStudies,
   PathQuirk,
   Range,
+  RawTagValue,
   SeriesEntrySpec,
   SeriesInstances,
   SeriesSpec,

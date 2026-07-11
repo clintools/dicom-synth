@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { generateFile } from '../src/collection/writer'
 import { parseNatural } from './helpers/dicom'
 
@@ -421,16 +421,13 @@ describe('generateFile — transferSyntax on non-valid-image types', () => {
   })
 })
 
-describe('generateFile — unknown hex tag warning', () => {
-  it('warns and does not throw for a hex tag not in the DICOM dictionary', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+describe('generateFile — unknown hex tag', () => {
+  it('throws for a plain-valued hex tag not in the DICOM dictionary', async () => {
     await expect(
       generateFile({
         type: 'valid-image',
-        tags: { '00990099': 'private-value' },
+        tags: { '00980099': 'private-value' },
       }),
-    ).resolves.toBeDefined()
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('00990099'))
-    warn.mockRestore()
+    ).rejects.toThrow(/unknown hex tag "00980099".*raw \{ vr, value \} form/)
   })
 })

@@ -9,7 +9,7 @@ import type {
   NonDicomSpec,
   TransferSyntax,
 } from '../schema/types.js'
-import { HEX_TAG_RE } from '../schema/validate.js'
+import { HEX_TAG_RE, isRawTagValue } from '../schema/validate.js'
 import type { UidSet } from './uid.js'
 
 // SOP Class UID plus the minimal modality-specific type-1 attributes needed
@@ -71,37 +71,94 @@ function buildTagToKeyword(): Map<string, string> {
 
 const tagToKeyword = buildTagToKeyword()
 
+// A dict-level element in dcmjs's raw shape; SQ items are maps of hex tags to
+// further RawElements. Assigned verbatim onto the serialised dict, bypassing
+// the keyword dictionary — how private tags and deliberate mis-encodings are
+// written.
+export type RawElement = { vr: string; Value: unknown[] }
+export type RawElementMap = Record<string, RawElement>
+
+// Spec raw form ({ vr, value }) → dict form ({ vr, Value: […] }), recursing
+// into SQ items. Value shape is validated at the schema boundary.
+function toRawElement(raw: { vr: string; value: unknown }): RawElement {
+  const value =
+    raw.vr === 'SQ'
+      ? (raw.value as Record<string, { vr: string; value: unknown }>[]).map(
+          (item) =>
+            Object.fromEntries(
+              Object.entries(item).map(([tag, nested]) => [
+                tag.toUpperCase(),
+                toRawElement(nested),
+              ]),
+            ),
+        )
+      : raw.value
+  return { vr: raw.vr, Value: Array.isArray(value) ? value : [value] }
+}
+
+// Applies keyword-resolvable overrides to the naturalised dataset and returns
+// the raw-form entries (private tags, deliberate mis-encodings) for direct
+// dict injection at serialisation. An unknown even-group hex tag with a plain
+// value throws — the dictionary cannot supply its VR, so it must use the raw
+// form.
 export function applyTagOverrides(
   dataset: Record<string, unknown>,
   tags: DicomTagOverrides | undefined,
-): void {
-  if (!tags) return
+): RawElementMap | undefined {
+  if (!tags) return undefined
+  let raw: RawElementMap | undefined
   for (const [key, value] of Object.entries(tags)) {
-    if (HEX_TAG_RE.test(key)) {
+    if (isRawTagValue(value)) {
+      raw ??= {}
+      raw[key.toUpperCase()] = toRawElement(value)
+    } else if (HEX_TAG_RE.test(key)) {
       const keyword = tagToKeyword.get(key.toUpperCase())
-      if (keyword) {
-        dataset[keyword] = value
-      } else {
-        console.warn(`dicom-synth: unknown hex tag "${key}" — skipping`)
+      if (!keyword) {
+        throw new Error(
+          `dicom-synth: unknown hex tag "${key}" — dictionary tags take plain values; private/unknown tags require the raw { vr, value } form`,
+        )
       }
+      dataset[keyword] = value
     } else {
       dataset[key] = value
     }
   }
+  return raw
+}
+
+// The scalar string a raw element would write for a given tag, if any.
+function rawScalarString(
+  rawElements: RawElementMap | undefined,
+  tag: string,
+): string | undefined {
+  const value = rawElements?.[tag]?.Value
+  return value?.length === 1 && typeof value[0] === 'string'
+    ? value[0]
+    : undefined
 }
 
 // PS3.10 requires the file meta group to mirror the dataset's SOP identifiers.
 // A tag override that rewrites them (e.g. describe's hashed SOPInstanceUID)
-// must flow into the meta header too, or the two diverge.
+// must flow into the meta header too, or the two diverge. Raw-form overrides
+// of the same tags win over the dataset, mirroring their write-time precedence.
 export function syncMetaWithDataset(
   meta: Record<string, unknown>,
   dataset: Record<string, unknown>,
+  rawElements?: RawElementMap,
 ): void {
-  if (typeof dataset.SOPInstanceUID === 'string') {
-    meta.MediaStorageSOPInstanceUID = dataset.SOPInstanceUID
+  const sopInstance =
+    rawScalarString(rawElements, '00080018') ??
+    (typeof dataset.SOPInstanceUID === 'string'
+      ? dataset.SOPInstanceUID
+      : undefined)
+  if (sopInstance !== undefined) {
+    meta.MediaStorageSOPInstanceUID = sopInstance
   }
-  if (typeof dataset.SOPClassUID === 'string') {
-    meta.MediaStorageSOPClassUID = dataset.SOPClassUID
+  const sopClass =
+    rawScalarString(rawElements, '00080016') ??
+    (typeof dataset.SOPClassUID === 'string' ? dataset.SOPClassUID : undefined)
+  if (sopClass !== undefined) {
+    meta.MediaStorageSOPClassUID = sopClass
   }
 }
 
@@ -151,9 +208,13 @@ export function buildBaseImageDataset(
   }
 }
 
+// rawElements are assigned onto the denaturalised dict verbatim (the
+// dictionary would drop or mangle them) — a raw entry for a dictionary tag
+// overwrites the naturalised element, which is the mis-encoding escape hatch.
 export function serializeDict(
   meta: Record<string, unknown>,
   dataset: Record<string, unknown>,
+  rawElements?: RawElementMap,
 ): Buffer {
   const dicomDict = new dcmjs.data.DicomDict(
     dcmjs.data.DicomMetaDictionary.denaturalizeDataset(
@@ -163,6 +224,9 @@ export function serializeDict(
   dicomDict.dict = dcmjs.data.DicomMetaDictionary.denaturalizeDataset(
     dataset,
   ) as Dcmjs.data.DicomDataset
+  if (rawElements) {
+    Object.assign(dicomDict.dict as Record<string, unknown>, rawElements)
+  }
   return Buffer.from(dicomDict.write({ allowInvalidVRLength: true }))
 }
 
@@ -175,12 +239,14 @@ function applySizing(
   dataset: Record<string, unknown>,
   meta: Record<string, unknown>,
   spec: ImageSpec,
+  rawElements?: RawElementMap,
 ): void {
   if (spec.targetSizeKb !== undefined) {
     const clampDim = (n: number) =>
       Math.min(MAX_DIMENSION, Math.max(1, Math.round(n)))
     const minimalPixelBytes = (dataset.PixelData as ArrayBuffer).byteLength
-    const overhead = serializeDict(meta, dataset).length - minimalPixelBytes
+    const overhead =
+      serializeDict(meta, dataset, rawElements).length - minimalPixelBytes
     const cells = Math.max(
       1,
       Math.round((spec.targetSizeKb * 1024 - overhead) / 2),
@@ -201,7 +267,10 @@ function applySizing(
   }
 }
 
-function buildImageBuffer(spec: ImageSpec, uid: UidSet): Buffer {
+function buildImageBuffer(
+  spec: ImageSpec,
+  uid: UidSet,
+): { buffer: Buffer; rawElements?: RawElementMap } {
   const modality = spec.modality ?? 'CT'
 
   // UIDs contain the string "study"/"series"/"sop" — non-numeric, non-conformant.
@@ -220,13 +289,13 @@ function buildImageBuffer(spec: ImageSpec, uid: UidSet): Buffer {
     dataset.Laterality = ''
     dataset.PatientWeight = '0'
   }
-  applyTagOverrides(dataset, spec.tags)
+  const rawElements = applyTagOverrides(dataset, spec.tags)
 
   // Sizing after tag overrides so the probe measures the final overhead.
   const meta = buildMeta(effectiveUid, modality, spec.transferSyntax)
-  syncMetaWithDataset(meta, dataset)
-  applySizing(dataset, meta, spec)
-  return serializeDict(meta, dataset)
+  syncMetaWithDataset(meta, dataset, rawElements)
+  applySizing(dataset, meta, spec, rawElements)
+  return { buffer: serializeDict(meta, dataset, rawElements), rawElements }
 }
 
 function buildFakeSignatureBuffer(): Buffer {
@@ -252,18 +321,23 @@ function buildNonDicomBuffer(spec: NonDicomSpec): Buffer {
   return Buffer.from(spec.content ?? 'not dicom', 'utf8')
 }
 
-export function buildBufferForSpec(spec: FileSpec, uid: UidSet): Buffer {
+// rawElements accompany image buffers so the violations pass (which re-parses
+// through the dictionary and would drop them) can re-apply them.
+export function buildBufferForSpec(
+  spec: FileSpec,
+  uid: UidSet,
+): { buffer: Buffer; rawElements?: RawElementMap } {
   switch (spec.type) {
     case 'valid-image':
     case 'invalid-uid-image':
     case 'vendor-warnings-image':
       return buildImageBuffer(spec, uid)
     case 'fake-signature':
-      return buildFakeSignatureBuffer()
+      return { buffer: buildFakeSignatureBuffer() }
     case 'non-dicom':
-      return buildNonDicomBuffer(spec)
+      return { buffer: buildNonDicomBuffer(spec) }
     case 'dicomdir':
-      return buildDicomdirBuffer()
+      return { buffer: buildDicomdirBuffer() }
     case 'large-image':
       throw new Error(
         'large-image cannot be generated in memory — use writeCollectionFromSpec (disk-only streaming)',
