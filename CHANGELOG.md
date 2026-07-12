@@ -1,3 +1,10 @@
+# [1.18.0](https://github.com/clintools/dicom-synth/compare/v1.17.0...v1.18.0) (2026-07-12)
+
+
+### Features
+
+* capture private tags as-is in describe ([81b20de](https://github.com/clintools/dicom-synth/commit/81b20de81f74c8c7fae63eff950218c47d2ef3a3))
+
 # [1.17.0](https://github.com/clintools/dicom-synth/compare/v1.16.0...v1.17.0) (2026-07-11)
 
 
