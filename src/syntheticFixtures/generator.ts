@@ -1,6 +1,7 @@
 import type * as Dcmjs from 'dcmjs'
 import { dcmjs } from '../loadDcmjs.js'
 import { buildDicomdirBuffer } from '../nonStandardDicom/dicomdir.js'
+import { patternBytes, utf8Bytes } from '../platform/bytes.js'
 import type {
   DicomTagOverrides,
   FileSpec,
@@ -215,7 +216,7 @@ export function serializeDict(
   meta: Record<string, unknown>,
   dataset: Record<string, unknown>,
   rawElements?: RawElementMap,
-): Buffer {
+): Uint8Array {
   const dicomDict = new dcmjs.data.DicomDict(
     dcmjs.data.DicomMetaDictionary.denaturalizeDataset(
       meta,
@@ -227,7 +228,7 @@ export function serializeDict(
   if (rawElements) {
     Object.assign(dicomDict.dict as Record<string, unknown>, rawElements)
   }
-  return Buffer.from(dicomDict.write({ allowInvalidVRLength: true }))
+  return new Uint8Array(dicomDict.write({ allowInvalidVRLength: true }))
 }
 
 // US (unsigned short) VR limit for Rows/Columns.
@@ -270,7 +271,7 @@ function applySizing(
 function buildImageBuffer(
   spec: ImageSpec,
   uid: UidSet,
-): { buffer: Buffer; rawElements?: RawElementMap } {
+): { buffer: Uint8Array; rawElements?: RawElementMap } {
   const modality = spec.modality ?? 'CT'
 
   // UIDs contain the string "study"/"series"/"sop" — non-numeric, non-conformant.
@@ -298,9 +299,9 @@ function buildImageBuffer(
   return { buffer: serializeDict(meta, dataset, rawElements), rawElements }
 }
 
-function buildFakeSignatureBuffer(): Buffer {
-  const buf = Buffer.alloc(200, 0)
-  buf.write('XXXX', 128, 4, 'ascii')
+function buildFakeSignatureBuffer(): Uint8Array {
+  const buf = new Uint8Array(200)
+  buf.set(utf8Bytes('XXXX'), 128)
   return buf
 }
 
@@ -315,10 +316,10 @@ export function sizedNonDicomBytes(spec: NonDicomSpec): number | undefined {
 
 // Sized form emits deterministic placeholder bytes — real file content is
 // never reproduced.
-function buildNonDicomBuffer(spec: NonDicomSpec): Buffer {
+function buildNonDicomBuffer(spec: NonDicomSpec): Uint8Array {
   const bytes = sizedNonDicomBytes(spec)
-  if (bytes !== undefined) return Buffer.alloc(bytes, 'not dicom ')
-  return Buffer.from(spec.content ?? 'not dicom', 'utf8')
+  if (bytes !== undefined) return patternBytes(bytes, 'not dicom ')
+  return utf8Bytes(spec.content ?? 'not dicom')
 }
 
 // rawElements accompany image buffers so the violations pass (which re-parses
@@ -326,7 +327,7 @@ function buildNonDicomBuffer(spec: NonDicomSpec): Buffer {
 export function buildBufferForSpec(
   spec: FileSpec,
   uid: UidSet,
-): { buffer: Buffer; rawElements?: RawElementMap } {
+): { buffer: Uint8Array; rawElements?: RawElementMap } {
   switch (spec.type) {
     case 'valid-image':
     case 'invalid-uid-image':

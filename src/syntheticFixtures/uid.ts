@@ -1,4 +1,6 @@
-import { createHash, randomBytes } from 'node:crypto'
+import { bytesToHex } from '../platform/bytes.js'
+import { randomHex } from '../platform/random.js'
+import { sha256 } from '../platform/sha256.js'
 
 export type UidSet = { study: string; series: string; sop: string }
 
@@ -7,18 +9,14 @@ export type UidSet = { study: string; series: string; sop: string }
 // disjoint UIDs; the same (salt, key) is stable, which preserves cross-file
 // links and reproducibility. Length ≤ 44 chars, within the 64-char UI VR limit.
 export function hashUid(salt: string, key: string): string {
-  const digest = createHash('sha256')
-    .update(salt)
-    .update(' ')
-    .update(key)
-    .digest()
-  const n = BigInt(`0x${digest.subarray(0, 16).toString('hex')}`)
+  const digest = sha256(`${salt} ${key}`)
+  const n = BigInt(`0x${bytesToHex(digest.subarray(0, 16))}`)
   return `2.25.${n.toString()}`
 }
 
 // A random 128-bit UID for the saltless (non-reproducible) path.
 function randomUid(): string {
-  const n = BigInt(`0x${randomBytes(16).toString('hex')}`)
+  const n = BigInt(`0x${randomHex(16)}`)
   return `2.25.${n.toString()}`
 }
 

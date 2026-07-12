@@ -10,7 +10,7 @@ Generation is a three-layer API. Each layer is a thin wrapper over the one below
 import { generateFile } from 'dicom-synth'
 
 const { buffer, filename, type, index } = await generateFile({ type: 'valid-image' })
-// buffer: Buffer ready to write or pass to a parser
+// buffer: Uint8Array ready to write or pass to a parser
 // filename: 'valid-image-000.dcm'
 ```
 

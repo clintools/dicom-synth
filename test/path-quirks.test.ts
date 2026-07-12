@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   type GeneratedFile,
   generateCollectionFromSpec,
-  writeCollectionFromSpec,
-} from '../src/collection/writer'
+} from '../src/collection/generate'
+import { writeCollectionFromSpec } from '../src/collection/writer'
 import type { DatasetSpec, PathQuirk } from '../src/schema/types'
 import { validateDatasetSpec } from '../src/schema/validate'
 

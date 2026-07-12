@@ -7,8 +7,8 @@ import {
   generateCollectionFromSpec,
   generateFile,
   previewCollection,
-  writeCollectionFromSpec,
-} from '../src/collection/writer'
+} from '../src/collection/generate'
+import { writeCollectionFromSpec } from '../src/collection/writer'
 import type { DatasetSpec } from '../src/schema/types'
 import { parseNatural } from './helpers/dicom'
 

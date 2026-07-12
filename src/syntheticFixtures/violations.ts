@@ -1,4 +1,5 @@
 import { dcmjs } from '../loadDcmjs.js'
+import { concatBytes } from '../platform/bytes.js'
 import type { ViolationClass } from '../schema/types.js'
 import type { RawElementMap } from './generator.js'
 
@@ -17,7 +18,7 @@ const dcmjsAny = dcmjs as unknown as {
   }
 }
 
-function parseBuffer(buffer: Buffer): {
+function parseBuffer(buffer: Uint8Array): {
   dict: unknown
   write: (opts?: Record<string, unknown>) => ArrayBuffer
 } {
@@ -32,8 +33,8 @@ function parseBuffer(buffer: Buffer): {
 function reserialize(parsed: {
   dict: unknown
   write: (opts?: Record<string, unknown>) => ArrayBuffer
-}): Buffer {
-  return Buffer.from(parsed.write({ allowInvalidVRLength: true }))
+}): Uint8Array {
+  return new Uint8Array(parsed.write({ allowInvalidVRLength: true }))
 }
 
 // UID VR limit is 64 chars; this is 65.
@@ -51,10 +52,10 @@ const VIOLATION_LEVEL = {
 } as const satisfies Record<ViolationClass, 'tag' | 'byte'>
 
 function applyTagLevel(
-  buffer: Buffer,
+  buffer: Uint8Array,
   violations: ViolationClass[],
   rawElements?: RawElementMap,
-): Buffer {
+): Uint8Array {
   if (violations.length === 0) return buffer
 
   let parsed: ReturnType<typeof parseBuffer>
@@ -119,7 +120,10 @@ function applyTagLevel(
   return reserialize(parsed)
 }
 
-function applyByteLevel(buffer: Buffer, violations: ViolationClass[]): Buffer {
+function applyByteLevel(
+  buffer: Uint8Array,
+  violations: ViolationClass[],
+): Uint8Array {
   let result = buffer
 
   for (const v of violations) {
@@ -131,11 +135,12 @@ function applyByteLevel(buffer: Buffer, violations: ViolationClass[]): Buffer {
       case 'malformed-sq-delimiter': {
         // Append a sequence delimiter tag (FFFE,E0DD) with non-zero length field
         // (must be 00000000 per standard — using 00000004 here is the violation).
-        const delimiter = Buffer.alloc(8)
-        delimiter.writeUInt16LE(0xfffe, 0)
-        delimiter.writeUInt16LE(0xe0dd, 2)
-        delimiter.writeUInt32LE(0x00000004, 4)
-        result = Buffer.concat([result, delimiter])
+        const delimiter = new Uint8Array(8)
+        const view = new DataView(delimiter.buffer)
+        view.setUint16(0, 0xfffe, true)
+        view.setUint16(2, 0xe0dd, true)
+        view.setUint32(4, 0x00000004, true)
+        result = concatBytes(result, delimiter)
         break
       }
       default:
@@ -149,10 +154,10 @@ function applyByteLevel(buffer: Buffer, violations: ViolationClass[]): Buffer {
 }
 
 export function applyViolations(
-  buffer: Buffer,
+  buffer: Uint8Array,
   violations: ViolationClass[],
   rawElements?: RawElementMap,
-): Buffer {
+): Uint8Array {
   if (violations.length === 0) return buffer
 
   const tagViolations = violations.filter((v) => VIOLATION_LEVEL[v] === 'tag')

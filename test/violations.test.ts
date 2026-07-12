@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { generateFile } from '../src/collection/writer'
+import { generateFile } from '../src/collection/generate'
 import type { ViolationClass } from '../src/schema/types'
 import { applyViolations } from '../src/syntheticFixtures/violations'
+import { ascii, binary } from './helpers/dicom'
 
 // Generate a base valid-image buffer to use as the input for violation tests.
 async function baseBuffer() {
@@ -31,7 +32,7 @@ describe('violations — uid-too-long', () => {
       type: 'valid-image',
       violations: ['uid-too-long'],
     })
-    expect(buffer.subarray(128, 132).toString('ascii')).toBe('DICM')
+    expect(ascii(buffer.subarray(128, 132))).toBe('DICM')
   })
 
   it('writes a 65-char SOPInstanceUID — not truncated to the legal 64', async () => {
@@ -41,7 +42,7 @@ describe('violations — uid-too-long', () => {
     })
     // dcmjs denaturalizeDataset truncates UI values to 64 chars; a truncated
     // UID would end after 59 zeros, so requiring all 60 proves it survived.
-    expect(buffer.toString('binary')).toContain(`2.25.${'0'.repeat(60)}`)
+    expect(binary(buffer)).toContain(`2.25.${'0'.repeat(60)}`)
   })
 })
 
@@ -52,7 +53,7 @@ describe('violations — non-conformant-uid', () => {
       violations: ['non-conformant-uid'],
     })
     // '2.25.01.' is present: the '01' component has a leading zero
-    expect(buffer.toString('binary')).toContain('2.25.01.')
+    expect(binary(buffer)).toContain('2.25.01.')
   })
 })
 
@@ -68,7 +69,7 @@ describe('violations — missing-meta-header', () => {
       type: 'valid-image',
       violations: ['missing-meta-header'],
     })
-    expect(buffer.subarray(0, 4).toString('ascii')).not.toBe('DICM')
+    expect(ascii(buffer.subarray(0, 4))).not.toBe('DICM')
   })
 })
 
@@ -87,7 +88,7 @@ describe('violations — combinations', () => {
       violations: ['uid-too-long', 'missing-meta-header'],
     })
     // After stripping preamble, buffer should not start with DICM
-    expect(buffer.subarray(0, 4).toString('ascii')).not.toBe('DICM')
+    expect(ascii(buffer.subarray(0, 4))).not.toBe('DICM')
   })
 })
 

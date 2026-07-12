@@ -3,11 +3,11 @@ import {
   type GeneratedFile,
   generateCollectionFromSpec,
   generateFile,
-} from '../src/collection/writer'
+} from '../src/collection/generate'
 import type { DatasetSpec } from '../src/schema/types'
 import { validateDatasetSpec } from '../src/schema/validate'
 import { resolveTagTemplates } from '../src/syntheticFixtures/tagTemplate'
-import { parseNatural } from './helpers/dicom'
+import { base64, parseNatural } from './helpers/dicom'
 
 async function collect(spec: DatasetSpec): Promise<GeneratedFile[]> {
   const files: GeneratedFile[] = []
@@ -131,8 +131,8 @@ describe('templated tags — collection paths', () => {
     }
     const a = await collect(spec)
     const b = await collect(spec)
-    expect(a.map((f) => f.buffer.toString('base64'))).toEqual(
-      b.map((f) => f.buffer.toString('base64')),
+    expect(a.map((f) => base64(f.buffer))).toEqual(
+      b.map((f) => base64(f.buffer)),
     )
   })
 })

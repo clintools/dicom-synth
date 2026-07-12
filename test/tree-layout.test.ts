@@ -8,11 +8,11 @@ import {
   generateCollectionFromSpec,
   generateFile,
   previewCollection,
-  writeCollectionFromSpec,
-} from '../src/collection/writer'
+} from '../src/collection/generate'
+import { writeCollectionFromSpec } from '../src/collection/writer'
 import type { DatasetSpec, TreeNode } from '../src/schema/types'
 import { validateDatasetSpec } from '../src/schema/validate'
-import { parseNatural } from './helpers/dicom'
+import { parseNatural, utf8 } from './helpers/dicom'
 
 async function collect(spec: DatasetSpec): Promise<GeneratedFile[]> {
   const files: GeneratedFile[] = []
@@ -166,7 +166,7 @@ describe('non-dicom sizing', () => {
   it('targetSizeKb produces exactly sized placeholder bytes', async () => {
     const file = await generateFile({ type: 'non-dicom', targetSizeKb: 3 })
     expect(file.buffer.length).toBe(3 * 1024)
-    expect(file.buffer.toString('utf8', 0, 9)).toBe('not dicom')
+    expect(utf8(file.buffer.subarray(0, 9))).toBe('not dicom')
   })
 
   it('targetBytes produces byte-exact placeholders', async () => {
@@ -176,9 +176,9 @@ describe('non-dicom sizing', () => {
 
   it('content and default forms are unchanged', async () => {
     const explicit = await generateFile({ type: 'non-dicom', content: 'hello' })
-    expect(explicit.buffer.toString('utf8')).toBe('hello')
+    expect(utf8(explicit.buffer)).toBe('hello')
     const fallback = await generateFile({ type: 'non-dicom' })
-    expect(fallback.buffer.toString('utf8')).toBe('not dicom')
+    expect(utf8(fallback.buffer)).toBe('not dicom')
   })
 })
 

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { generateFile } from '../src/collection/writer'
-import { parseNatural } from './helpers/dicom'
+import { generateFile } from '../src/collection/generate'
+import { ascii, binary, parseNatural, utf8 } from './helpers/dicom'
 
-function assertImplicitVr(buffer: Buffer): void {
-  const bin = buffer.toString('binary')
+function assertImplicitVr(buffer: Uint8Array): void {
+  const bin = binary(buffer)
   expect(bin).not.toContain('1.2.840.10008.1.2.1')
   expect(bin).toContain('1.2.840.10008.1.2')
 }
@@ -11,7 +11,7 @@ function assertImplicitVr(buffer: Buffer): void {
 describe('generateFile — valid-image', () => {
   it('produces a buffer with a valid DICM signature', async () => {
     const { buffer } = await generateFile({ type: 'valid-image' })
-    expect(buffer.subarray(128, 132).toString('ascii')).toBe('DICM')
+    expect(ascii(buffer.subarray(128, 132))).toBe('DICM')
   })
 
   it('produces a buffer larger than 128 bytes', async () => {
@@ -33,22 +33,22 @@ describe('generateFile — valid-image', () => {
 describe('generateFile — invalid-uid-image', () => {
   it('produces a buffer with a valid DICM signature', async () => {
     const { buffer } = await generateFile({ type: 'invalid-uid-image' })
-    expect(buffer.subarray(128, 132).toString('ascii')).toBe('DICM')
+    expect(ascii(buffer.subarray(128, 132))).toBe('DICM')
   })
 
   it('embeds non-numeric UID strings for study, series, and sop', async () => {
     const { buffer } = await generateFile({ type: 'invalid-uid-image' })
-    const binary = buffer.toString('binary')
-    expect(binary).toContain('invalid.study')
-    expect(binary).toContain('invalid.series')
-    expect(binary).toContain('invalid.sop')
+    const bin = binary(buffer)
+    expect(bin).toContain('invalid.study')
+    expect(bin).toContain('invalid.series')
+    expect(bin).toContain('invalid.sop')
   })
 })
 
 describe('generateFile — vendor-warnings-image', () => {
   it('produces a buffer with a valid DICM signature', async () => {
     const { buffer } = await generateFile({ type: 'vendor-warnings-image' })
-    expect(buffer.subarray(128, 132).toString('ascii')).toBe('DICM')
+    expect(ascii(buffer.subarray(128, 132))).toBe('DICM')
   })
 
   it('sets PatientWeight to "0" in parsed output', async () => {
@@ -135,8 +135,8 @@ describe('generateFile — modality presets', () => {
       modality: 'PT',
     })
     // PET SOP Class must also replace CT's in the meta header — no CT UID anywhere.
-    expect(buffer.toString('binary')).toContain(SOP_CLASS.PT)
-    expect(buffer.toString('binary')).not.toContain(SOP_CLASS.CT)
+    expect(binary(buffer)).toContain(SOP_CLASS.PT)
+    expect(binary(buffer)).not.toContain(SOP_CLASS.CT)
   })
 
   it('PT includes PET type-1 attributes', async () => {
@@ -336,7 +336,7 @@ describe('generateFile — targetSizeKb', () => {
 describe('generateFile — non-dicom content', () => {
   it('default buffer contains "not dicom"', async () => {
     const { buffer } = await generateFile({ type: 'non-dicom' })
-    expect(buffer.toString('utf8')).toBe('not dicom')
+    expect(utf8(buffer)).toBe('not dicom')
   })
 
   it('encodes custom content field as UTF-8', async () => {
@@ -344,7 +344,7 @@ describe('generateFile — non-dicom content', () => {
       type: 'non-dicom',
       content: 'garbage bytes',
     })
-    expect(buffer.toString('utf8')).toBe('garbage bytes')
+    expect(utf8(buffer)).toBe('garbage bytes')
   })
 
   it('has no .dcm extension in filename', async () => {
@@ -356,7 +356,7 @@ describe('generateFile — non-dicom content', () => {
 describe('generateFile — dicomdir', () => {
   it('has a valid DICM signature', async () => {
     const { buffer } = await generateFile({ type: 'dicomdir' })
-    expect(buffer.subarray(128, 132).toString('ascii')).toBe('DICM')
+    expect(ascii(buffer.subarray(128, 132))).toBe('DICM')
   })
 
   it('has .dcm extension in filename', async () => {
@@ -371,7 +371,7 @@ describe('generateFile — transferSyntax', () => {
       type: 'valid-image',
       transferSyntax: 'explicit-vr-little-endian',
     })
-    expect(buffer.toString('binary')).toContain('1.2.840.10008.1.2.1')
+    expect(binary(buffer)).toContain('1.2.840.10008.1.2.1')
   })
 
   it('implicit-vr-little-endian embeds UID 1.2.840.10008.1.2 in meta header', async () => {
@@ -391,11 +391,11 @@ describe('generateFile — implicit-vr encoding', () => {
     })
     // Modality tag (0008,0060) in Little Endian bytes.
     const modalityTag = Buffer.from([0x08, 0x00, 0x60, 0x00])
-    const idx = buffer.indexOf(modalityTag)
+    const idx = Buffer.from(buffer).indexOf(modalityTag)
     expect(idx).toBeGreaterThan(0)
     // In Implicit VR, the 4 bytes after the tag are the length field (no VR string).
     // Modality value is 'CT' (2 bytes) → length = 02 00 00 00.
-    const vrBytes = buffer.subarray(idx + 4, idx + 6).toString('ascii')
+    const vrBytes = ascii(buffer.subarray(idx + 4, idx + 6))
     expect(vrBytes).not.toBe('CS') // no VR code present
     expect(buffer[idx + 4]).toBe(0x02) // first byte of 4-byte length is 2
   })

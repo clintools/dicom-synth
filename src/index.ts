@@ -2,7 +2,6 @@
 
 // Collection API
 export {
-  type CollectionManifest,
   type CollectionPreviewItem,
   type GeneratedFile,
   generateCollectionFromSpec,
@@ -10,6 +9,9 @@ export {
   previewCollection,
   withResolvedSalt,
   withResolvedSeed,
+} from './collection/generate.js'
+export {
+  type CollectionManifest,
   writeCollectionFromSpec,
 } from './collection/writer.js'
 export {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { generateFile } from '../src/collection/writer'
+import { generateFile } from '../src/collection/generate'
+import { ascii } from './helpers/dicom'
 
 describe('generateFile — fake-signature', () => {
   it('produces a 200-byte buffer', async () => {
@@ -9,7 +10,7 @@ describe('generateFile — fake-signature', () => {
 
   it('has XXXX at offset 128 instead of DICM', async () => {
     const { buffer } = await generateFile({ type: 'fake-signature' })
-    expect(buffer.subarray(128, 132).toString('ascii')).toBe('XXXX')
+    expect(ascii(buffer.subarray(128, 132))).toBe('XXXX')
   })
 
   it('filename has no extension', async () => {

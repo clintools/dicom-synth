@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { randomUint32 } from '../platform/random.js'
 import {
   PARAMETRIC_STREAM_OFFSET,
   seededStream,
@@ -44,7 +44,7 @@ function fraction(next: () => number): number {
 // embedded in the output, so the resolved spec is saveable and re-runnable.
 export function resolveParametricSpec(spec: ParametricSpec): DatasetSpec {
   const validated = validateParametricSpec(spec)
-  const seed = validated.seed ?? randomBytes(4).readUInt32BE(0)
+  const seed = validated.seed ?? randomUint32()
   const next = seededStream(seed, PARAMETRIC_STREAM_OFFSET, 0, 0)
   const params = validated.studies
 

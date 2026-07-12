@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   generateCollectionFromSpec,
   withResolvedSalt,
-} from '../src/collection/writer'
+} from '../src/collection/generate'
 import type { DatasetSpec } from '../src/schema/types'
 import { validateDatasetSpec } from '../src/schema/validate'
 import { parseNatural } from './helpers/dicom'

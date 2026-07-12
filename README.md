@@ -24,7 +24,7 @@ for await (const file of generateCollectionFromSpec({
   entries: [{ type: 'valid-image', count: 5 }],
   seed: 42,
 })) {
-  console.log(file.filename, file.buffer.length) // Buffer ready to parse or pipe
+  console.log(file.filename, file.buffer.length) // Uint8Array ready to parse or pipe
 }
 ```
 

@@ -9,7 +9,7 @@ import {
   streamLargeImage,
   validateDatasetSpec,
 } from '../src'
-import { parseRawDict, parseWithMeta } from './helpers/dicom'
+import { binary, parseRawDict, parseWithMeta } from './helpers/dicom'
 
 // A representative private block: creator, scalar, multi-valued, and a
 // two-level nested private sequence.
@@ -109,7 +109,7 @@ describe('private tag generation (raw form)', () => {
       violations: ['missing-meta-header'],
     })
     // Headerless buffers cannot be re-parsed; assert on the bytes.
-    expect(file.buffer.includes('ACME_SYNTH', 0, 'ascii')).toBe(true)
+    expect(binary(file.buffer)).toContain('ACME_SYNTH')
   })
 
   it('throws on an unknown even-group hex tag with a plain value', async () => {

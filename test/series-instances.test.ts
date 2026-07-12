@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest'
 import {
   type GeneratedFile,
   generateCollectionFromSpec,
-} from '../src/collection/writer'
+} from '../src/collection/generate'
 import { tagValuesEqual } from '../src/describe/describe'
 import { MAX_PIXEL_BYTES } from '../src/schema/limits'
 import type { DatasetSpec } from '../src/schema/types'
 import { validateDatasetSpec } from '../src/schema/validate'
-import { parseNatural } from './helpers/dicom'
+import { base64, parseNatural } from './helpers/dicom'
 
 async function collect(spec: DatasetSpec): Promise<GeneratedFile[]> {
   const files: GeneratedFile[] = []
@@ -141,8 +141,8 @@ describe('instances form — generation', () => {
     }
     const a = await collect(spec)
     const b = await collect(spec)
-    expect(a.map((f) => f.buffer.toString('base64'))).toEqual(
-      b.map((f) => f.buffer.toString('base64')),
+    expect(a.map((f) => base64(f.buffer))).toEqual(
+      b.map((f) => base64(f.buffer)),
     )
   })
 })

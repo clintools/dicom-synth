@@ -31,6 +31,12 @@ const ITEM_TAG_GROUP = 0xfffe
 const ITEM_TAG_ELEMENT = 0xe000
 const SEQUENCE_DELIMITER_ELEMENT = 0xe0dd
 
+// serializeDict returns a platform-neutral Uint8Array; this disk-only module
+// needs Buffer's indexOf/readUInt32LE, so wrap it (zero-copy view).
+function asBuffer(bytes: Uint8Array): Buffer {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+}
+
 export type LargeImageSpec = {
   /** Approximate total file size in bytes (must exceed the 512 MB cap). */
   targetBytes: number
@@ -128,7 +134,7 @@ function writeNative(
   // length(4) — so a decoy byte sequence inside an earlier element's value (e.g.
   // OW OverlayData) cannot be mistaken for it.
   const minimalPixelBytes = (dataset.PixelData as ArrayBuffer).byteLength
-  const probe = serializeDict(meta, dataset, rawElements)
+  const probe = asBuffer(serializeDict(meta, dataset, rawElements))
   const pixelElement = Buffer.alloc(12)
   PIXEL_DATA_OW_HEADER.copy(pixelElement)
   pixelElement.writeUInt32LE(minimalPixelBytes, 8)
@@ -171,7 +177,7 @@ function writeEncapsulated(
   dataset.PixelData = [new Uint8Array([]).buffer, new Uint8Array([0, 0]).buffer]
   dataset._vrMap = { PixelData: 'OB' }
 
-  const probe = serializeDict(meta, dataset, rawElements)
+  const probe = asBuffer(serializeDict(meta, dataset, rawElements))
   const idx = probe.indexOf(PIXEL_DATA_OB_HEADER)
   if (idx < 0 || probe.readUInt32LE(idx + 8) !== 0xffffffff) {
     throw new Error('failed to locate encapsulated PixelData element header')

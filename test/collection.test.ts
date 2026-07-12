@@ -3,16 +3,16 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import type { GeneratedFile } from '../src/collection/writer'
+import type { GeneratedFile } from '../src/collection/generate'
 import {
   generateCollectionFromSpec,
   generateFile,
   withResolvedSeed,
-  writeCollectionFromSpec,
-} from '../src/collection/writer'
+} from '../src/collection/generate'
+import { writeCollectionFromSpec } from '../src/collection/writer'
 import type { DatasetSpec } from '../src/schema/types'
 import { applyViolations } from '../src/syntheticFixtures/violations'
-import { parseNatural } from './helpers/dicom'
+import { ascii, base64, binary, parseNatural } from './helpers/dicom'
 
 async function collect(spec: DatasetSpec): Promise<GeneratedFile[]> {
   const files: GeneratedFile[] = []
@@ -85,7 +85,7 @@ describe('generateCollectionFromSpec — layer 2', () => {
   })
 
   it('yields unique buffers for unseeded collections', async () => {
-    const buffers: Buffer[] = []
+    const buffers: Uint8Array[] = []
     for await (const f of generateCollectionFromSpec({
       entries: [{ type: 'valid-image', count: 3 }],
     })) {
@@ -98,7 +98,7 @@ describe('generateCollectionFromSpec — layer 2', () => {
 
   it('produces deterministic output for a seeded spec', async () => {
     const collect = async () => {
-      const bufs: Buffer[] = []
+      const bufs: Uint8Array[] = []
       for await (const f of generateCollectionFromSpec({
         entries: [{ type: 'valid-image', count: 3 }],
         seed: 99,
@@ -137,14 +137,14 @@ describe('generateCollectionFromSpec — layer 2', () => {
   })
 
   it('applies violations to entries that include them', async () => {
-    const files: Array<{ buffer: Buffer }> = []
+    const files: Array<{ buffer: Uint8Array }> = []
     for await (const f of generateCollectionFromSpec({
       entries: [{ type: 'valid-image', violations: ['missing-meta-header'] }],
     })) {
       files.push(f)
     }
     // missing-meta-header strips 132 bytes — buffer must not start with DICM
-    expect(files[0].buffer.subarray(0, 4).toString('ascii')).not.toBe('DICM')
+    expect(ascii(files[0].buffer.subarray(0, 4))).not.toBe('DICM')
   })
 })
 
@@ -303,12 +303,12 @@ describe('generateCollectionFromSpec — study/series grouping', () => {
       seed: 7,
     })
     // dcmjs normalises non-conformant UIDs on read-back, so check the raw binary.
-    const extractInvalidStudyUid = (buf: Buffer): string | null => {
-      const binary = buf.toString('binary')
-      const start = binary.indexOf('2.25.invalid.study.')
+    const extractInvalidStudyUid = (buf: Uint8Array): string | null => {
+      const bin = binary(buf)
+      const start = bin.indexOf('2.25.invalid.study.')
       if (start === -1) return null
-      const end = binary.indexOf('\0', start)
-      return end === -1 ? binary.slice(start) : binary.slice(start, end)
+      const end = bin.indexOf('\0', start)
+      return end === -1 ? bin.slice(start) : bin.slice(start, end)
     }
     const uid0 = extractInvalidStudyUid(files[0].buffer)
     const uid1 = extractInvalidStudyUid(files[1].buffer)
@@ -480,8 +480,8 @@ describe('withResolvedSeed', () => {
     })
     const first = await collect(resolved)
     const second = await collect(resolved)
-    expect(second.map((f) => f.buffer.toString('base64'))).toEqual(
-      first.map((f) => f.buffer.toString('base64')),
+    expect(second.map((f) => base64(f.buffer))).toEqual(
+      first.map((f) => base64(f.buffer)),
     )
   })
 })
