@@ -121,7 +121,7 @@ const VALID_VRS = new Set([
 
 // A private tag has an odd group number; it has no dictionary entry, so its
 // VR must be declared via the raw form.
-function isPrivateHexTag(key: string): boolean {
+export function isPrivateHexTag(key: string): boolean {
   return HEX_TAG_RE.test(key) && Number.parseInt(key.slice(0, 4), 16) % 2 === 1
 }
 

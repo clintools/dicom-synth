@@ -20,6 +20,14 @@ await writeCollectionFromSpec(spec, './reproduced')
   ```
 
   ⚠️ Tags are copied exactly as found. If a kept tag contains PHI, handling that PHI is the **caller's responsibility** — the tool extracts only what you name.
+- **Private tags** (odd-group, e.g. `"00091001"`) may be named in `keepTags` too: they are captured from the parsed **raw dict** as [raw `{ vr, value }` forms](./schema-reference.md#private-tags-and-deliberate-mis-encodings-raw-form) with the file's own VR (their VRs survive only there), and regenerate through the same raw-form mechanism.
+- **`keepPrivateTags`** (default `false`) captures **all** private elements as-is — creators, scalars, multi-valued, and nested private sequences — without having to enumerate unknown tags. This is the route for replicating problem datasets whose value lies in their vendor blocks:
+
+  ```ts
+  describeDirectory('./real-dataset', { keepPrivateTags: true })
+  ```
+
+  ⚠️ Private blocks routinely carry PHI or device detail; as with `keepTags`, handling that is the caller's responsibility. Two safety properties still hold: **UID-valued leaves inside captured private elements are hashed** under `preserveUids` (the default — no real UID leaves the dataset even from a private block; set `preserveUids: false` for verbatim), and elements whose payload cannot be represented in a JSON spec — **binary** values (raw bytes, e.g. `OB`/`UN` blobs) and **unparseable** components (e.g. a malformed `DS`, which dcmjs parses as `NaN` — a value JSON would silently corrupt) — are skipped, counted in `stats.privateBinarySkipped`, and warned about. Per-file private values participate in the collapse key, so heavy variation grows the spec like any verbatim keep.
 - **Reserved tags are not kept verbatim**, even when named — they would desync or leak:
   - **Modality** — a preset value (`CT`/`PT`/`MR`/`CR`) is reproduced from the captured `modality` field, so it is not copied. A **non-preset** modality (`US`, `NM`, …) has no field route and *is* kept verbatim, so such datasets round-trip.
   - **Modality type-1 attrs** (`Units`, `DecayCorrection`, `CorrectedImage`, `ScanningSequence`, `SequenceVariant`) — owned by the preset; dropped with a warning.

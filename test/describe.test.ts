@@ -929,17 +929,32 @@ describe('readHeaderOnly', () => {
 
   it('extracts metadata identically to a full read', async () => {
     const manifest = await writeCollectionFromSpec(
-      { seed: 1, entries: [{ type: 'valid-image', modality: 'PT' }] },
+      {
+        seed: 1,
+        entries: [
+          {
+            type: 'valid-image',
+            modality: 'PT',
+            tags: { '00091001': { vr: 'SH', value: 'PRIV' } },
+          },
+        ],
+      },
       dir,
     )
     const path = manifest[0]?.path as string
-    const header = readHeaderOnly(path)
+    const header = readHeaderOnly(path)?.record
     const full = parseNatural(readFileSync(path))
 
     expect(header?.StudyInstanceUID).toBe(full.StudyInstanceUID)
     expect(header?.SeriesInstanceUID).toBe(full.SeriesInstanceUID)
     expect(header?.SOPInstanceUID).toBe(full.SOPInstanceUID)
     expect(header?.Modality).toBe('PT')
+    // The raw dict rides along, so private elements are capturable on the
+    // header-only (large-file) path too.
+    expect(readHeaderOnly(path)?.rawDict['00091001']).toMatchObject({
+      vr: 'SH',
+      Value: ['PRIV'],
+    })
   })
 
   it('returns null for a non-DICOM file', async () => {

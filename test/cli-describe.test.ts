@@ -107,4 +107,30 @@ describe('dicom-synth-describe CLI', () => {
       expect(code).not.toBe(0)
     },
   )
+
+  it.skipIf(!hasBuild)(
+    '--keep-private-tags emits private raw forms in the spec',
+    async () => {
+      const privateSrc = join(outDir, 'private-src')
+      await writeCollectionFromSpec(
+        {
+          seed: 2,
+          entries: [
+            {
+              type: 'valid-image',
+              tags: { '00091001': { vr: 'SH', value: 'SYNTH-A' } },
+            },
+          ],
+        },
+        privateSrc,
+      )
+      const out = join(outDir, 'spec.json')
+      const code = await run([privateSrc, '--keep-private-tags', '--out', out])
+      expect(code).toBe(0)
+      const spec = JSON.parse(readFileSync(out, 'utf8'))
+      expect(() => validateDatasetSpec(spec)).not.toThrow()
+      const tags = spec.studies?.[0]?.series?.[0]?.entries?.[0]?.tags
+      expect(tags?.['00091001']).toEqual({ vr: 'SH', value: 'SYNTH-A' })
+    },
+  )
 })

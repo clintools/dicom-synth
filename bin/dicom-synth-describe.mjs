@@ -6,7 +6,7 @@ import { describeDirectory } from '../dist/esm/index.js'
 
 function usage() {
   console.error(
-    'Usage: dicom-synth-describe <dir> [--out <spec.json[.gz]>] [--tree] [--keep-tags <a,b,...>] [--keep-tags-file <path>] [--size-tolerance <fraction>] [--no-preserve-uids] [--uid-salt <hex>] [--gzip]\n' +
+    'Usage: dicom-synth-describe <dir> [--out <spec.json[.gz]>] [--tree] [--keep-tags <a,b,...>] [--keep-tags-file <path>] [--keep-private-tags] [--size-tolerance <fraction>] [--no-preserve-uids] [--uid-salt <hex>] [--gzip]\n' +
       '\n' +
       'Scans a DICOM tree and emits a DatasetSpec describing its shape\n' +
       '(studies/series, per-file size, modality).\n' +
@@ -22,6 +22,13 @@ function usage() {
       "responsibility, not this tool's.\n" +
       '--keep-tags-file reads the same allow-list from a file (one tag per\n' +
       'line, # comments); merged with any --keep-tags.\n' +
+      '--keep-private-tags captures ALL private (odd-group) elements as-is as\n' +
+      'raw { vr, value } tag forms — creators, scalars, nested private\n' +
+      'sequences. Private blocks routinely carry PHI/device detail: handling\n' +
+      "that is the caller's responsibility. UID-valued leaves are still\n" +
+      'hashed unless --no-preserve-uids. Individual private tags can instead\n' +
+      'be named (8-hex) in --keep-tags. Binary/unparseable payloads are\n' +
+      'skipped and counted.\n' +
       '--size-tolerance folds near-identical file sizes (fraction, e.g. 0.05\n' +
       '= ±5%) into one entry; default exact.\n' +
       '--no-preserve-uids emits shape only with freshly minted UIDs (no link\n' +
@@ -52,6 +59,7 @@ let preserveUids = true
 let uidSalt
 let gzip = false
 let captureTree = false
+let keepPrivateTags = false
 const keepTags = []
 
 for (let i = 0; i < args.length; i++) {
@@ -77,6 +85,8 @@ for (let i = 0; i < args.length; i++) {
       console.error('--size-tolerance must be a non-negative number')
       process.exit(1)
     }
+  } else if (args[i] === '--keep-private-tags') {
+    keepPrivateTags = true
   } else if (args[i] === '--no-preserve-uids') {
     preserveUids = false
   } else if (args[i] === '--tree') {
@@ -107,6 +117,7 @@ let result
 try {
   result = describeDirectory(dir, {
     ...(keepTags.length ? { keepTags } : {}),
+    ...(keepPrivateTags ? { keepPrivateTags: true } : {}),
     ...(sizeTolerance !== undefined ? { sizeTolerance } : {}),
     preserveUids,
     ...(uidSalt !== undefined ? { uidSalt } : {}),

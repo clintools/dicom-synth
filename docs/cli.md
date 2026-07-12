@@ -78,8 +78,9 @@ dicom-synth-describe ./real-dataset --tree --out spec.json
 |---|---|
 | `<dir>` | DICOM tree to scan (required) |
 | `--out <path>` | Write the `DatasetSpec` JSON (default: stdout); a `.gz` suffix gzips it |
-| `--keep-tags <a,b,...>` | Copy the named tags (keywords or 8-hex) verbatim; omit for shape only |
+| `--keep-tags <a,b,...>` | Copy the named tags (keywords or 8-hex) verbatim; private (odd-group) hex tags are captured as raw `{ vr, value }` forms from the raw dict; omit for shape only |
 | `--keep-tags-file <path>` | Same allow-list from a file (one tag per line, `#` comments); merged with `--keep-tags` |
+| `--keep-private-tags` | Capture **all** private (odd-group) elements as-is as raw `{ vr, value }` forms — creators, scalars, nested private sequences. PHI is the caller's responsibility; UID-valued leaves are still hashed unless `--no-preserve-uids`; binary or unparseable payloads are skipped and counted (see the [describe tool](./describe.md)) |
 | `--size-tolerance <fraction>` | Fold near-identical file sizes (e.g. `0.05` = ±5%) into one entry; default exact. Normal images only — large files keep exact `targetBytes` |
 | `--tree` | Capture the real directory structure as a generic [`tree`](./schema-reference.md#generic-tree-tree) spec: anonymised names, sized non-DICOM placeholders included, grouping carried by hashed per-file UID tags. Cannot combine with `--no-preserve-uids`; `--size-tolerance` is ignored |
 | `--no-preserve-uids` | Disable UID link preservation (on by default); emit shape only with freshly minted UIDs |

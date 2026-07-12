@@ -20,7 +20,11 @@ import type {
   StudySpec,
   TreeNode,
 } from '../schema/types.js'
-import { positionalName, validateDatasetSpec } from '../schema/validate.js'
+import {
+  isPrivateHexTag,
+  positionalName,
+  validateDatasetSpec,
+} from '../schema/validate.js'
 import { escapeTagTemplate } from '../syntheticFixtures/tagTemplate.js'
 import { hashUid } from '../syntheticFixtures/uid.js'
 
@@ -74,6 +78,14 @@ export type DescribeOptions = {
   // synthetic UIDs (reproducible) while different datasets get disjoint UID
   // namespaces automatically. Pass an explicit salt to override that.
   uidSalt?: string
+  // Capture ALL private (odd-group) elements as-is — creators, scalars,
+  // nested private sequences — as raw { vr, value } forms from the parsed
+  // raw dict (their VRs survive only there). Off by default: private blocks
+  // routinely carry PHI/device detail, and handling that is the caller's
+  // responsibility, like keepTags. UI-VR leaves are still hashed under
+  // preserveUids; JSON-unrepresentable payloads (binary/NaN/null) are skipped
+  // and counted. Individual private tags can instead be named in keepTags.
+  keepPrivateTags?: boolean
   // Capture the real directory structure as a generic `tree` spec instead of
   // the compact studies/series form: anonymised directory names, one node per
   // file (kind + size; extension kept for non-DICOM), grouping carried by
@@ -92,6 +104,9 @@ export type DescribeResult = {
     // Files captured as sized non-dicom placeholders (captureTree only —
     // without it they count as skipped).
     nonDicomFiles: number
+    // Private elements skipped because their payload is JSON-unrepresentable
+    // (binary bytes, or the NaN/null dcmjs emits for unparseable values).
+    privateBinarySkipped: number
   }
 }
 
@@ -108,18 +123,51 @@ function buildHexToKeyword(): Map<string, string> {
   return map
 }
 
+// The two capture routes resolved from keepTags/keepPrivateTags: keyword tags
+// are copied from the naturalised record; private hex tags come from the raw
+// dict (as raw { vr, value } forms), either named individually or all of them.
+type KeepPlan = {
+  keywords: string[]
+  privateHex: Set<string>
+  allPrivate: boolean
+  capturingPrivate: boolean
+}
+
+function buildKeepPlan(options: DescribeOptions): KeepPlan {
+  const { keywords, privateHex } = options.keepTags
+    ? resolveKeepTags(options.keepTags)
+    : { keywords: [], privateHex: new Set<string>() }
+  const allPrivate = options.keepPrivateTags === true
+  return {
+    keywords,
+    privateHex,
+    allPrivate,
+    capturingPrivate: allPrivate || privateHex.size > 0,
+  }
+}
+
 // Resolve keepTags entries to DICOM keyword names, mapping hex tags via dcmjs
-// and rejecting unknown tags (hex or keyword) so typos surface rather than
-// silently matching nothing. Coupled (modality-preset) and UID-VR keywords are
-// dropped with a warning — the former is reproduced from the `modality` field,
-// the latter is handled by the (forthcoming) hash-derived UID path.
-function resolveKeepTags(keepTags: string[]): string[] {
+// and rejecting unknown even-group tags (hex or keyword) so typos surface
+// rather than silently matching nothing. Private (odd-group) hex tags have no
+// dictionary entry — they route to raw-dict capture instead. Coupled
+// (modality-preset) and UID-VR keywords are dropped with a warning — the
+// former is reproduced from the `modality` field, the latter is handled by
+// the hash-derived UID path.
+function resolveKeepTags(keepTags: string[]): {
+  keywords: string[]
+  privateHex: Set<string>
+} {
   const nameMap = dcmjsAny.data.DicomMetaDictionary.nameMap
   let hexToKeyword: Map<string, string> | undefined
   const kept: string[] = []
+  const privateHex = new Set<string>()
   for (const tag of keepTags) {
     let keyword: string
     if (HEX_TAG_RE.test(tag)) {
+      if (isPrivateHexTag(tag)) {
+        privateHex.add(tag.toUpperCase())
+        continue
+      }
       hexToKeyword ??= buildHexToKeyword()
       const mapped = hexToKeyword.get(tag.toUpperCase())
       if (!mapped) {
@@ -146,7 +194,111 @@ function resolveKeepTags(keepTags: string[]): string[] {
     }
     kept.push(keyword)
   }
-  return kept
+  return { keywords: kept, privateHex }
+}
+
+// Values a JSON spec cannot carry faithfully: binary payloads (dcmjs parses
+// OB/OW/UN as ArrayBuffers), null/undefined components, and non-finite
+// numbers (dcmjs parses an unparseable DS as NaN, which JSON would silently
+// turn into null) — skipped and counted rather than silently normalised.
+function isUnrepresentableValue(value: unknown): boolean {
+  return (
+    value === null ||
+    value === undefined ||
+    (typeof value === 'number' && !Number.isFinite(value)) ||
+    value instanceof ArrayBuffer ||
+    ArrayBuffer.isView(value)
+  )
+}
+
+// A raw-dict element → the spec's raw { vr, value } form, recursing into SQ
+// items; null (counted) when the element cannot ride a JSON spec.
+function toRawCapture(
+  el: RawDictElement,
+  skipped: { count: number },
+): { vr: string; value: unknown } | null {
+  const vr = el.vr
+  if (typeof vr !== 'string') {
+    skipped.count++
+    return null
+  }
+  if (vr === 'SQ') {
+    const items: Record<string, { vr: string; value: unknown }>[] = []
+    for (const item of el.Value ?? []) {
+      if (typeof item !== 'object' || item === null) continue
+      const converted: Record<string, { vr: string; value: unknown }> = {}
+      for (const [tag, nested] of Object.entries(item)) {
+        if (!HEX_TAG_RE.test(tag)) continue
+        const capture = toRawCapture(nested as RawDictElement, skipped)
+        if (capture) converted[tag.toUpperCase()] = capture
+      }
+      // An emptied item still marks its position, preserving item count.
+      items.push(converted)
+    }
+    return { vr, value: items }
+  }
+  const values = el.Value ?? []
+  if (values.some(isUnrepresentableValue)) {
+    skipped.count++
+    return null
+  }
+  return { vr, value: values.length === 1 ? values[0] : values }
+}
+
+// The file's private (odd-group) elements as raw forms — all of them, or only
+// the tags named in the keep plan.
+function capturePrivateTags(
+  rawDict: Record<string, RawDictElement>,
+  keep: KeepPlan,
+  skipped: { count: number },
+): Record<string, unknown> | undefined {
+  const captured: Record<string, unknown> = {}
+  let found = false
+  for (const [tag, el] of Object.entries(rawDict)) {
+    if (!HEX_TAG_RE.test(tag) || !isPrivateHexTag(tag)) continue
+    if (!keep.allPrivate && !keep.privateHex.has(tag.toUpperCase())) continue
+    const capture = toRawCapture(el, skipped)
+    if (capture) {
+      captured[tag.toUpperCase()] = capture
+      found = true
+    }
+  }
+  return found ? captured : undefined
+}
+
+// Hash the UI-VR leaves inside a captured raw form (the same one-map policy as
+// the keyword sweep: no real UID leaves the dataset), leaving other VRs as-is.
+function hashRawCaptureUids(
+  capture: { vr: string; value: unknown },
+  salt: string,
+  map: Map<string, string>,
+): { vr: string; value: unknown } {
+  if (capture.vr === 'UI') {
+    // Same gate as the keyword sweep (collectUidOriginals): only string
+    // leaves are UIDs — anything else is a malformed value, passed through
+    // rather than fed to the hasher.
+    return isUidLeaf(capture.value)
+      ? { vr: 'UI', value: hashUidValue(capture.value, salt, map) }
+      : capture
+  }
+  if (capture.vr === 'SQ') {
+    const items = capture.value as Record<
+      string,
+      { vr: string; value: unknown }
+    >[]
+    return {
+      vr: 'SQ',
+      value: items.map((item) =>
+        Object.fromEntries(
+          Object.entries(item).map(([tag, nested]) => [
+            tag,
+            hashRawCaptureUids(nested, salt, map),
+          ]),
+        ),
+      ),
+    }
+  }
+  return capture
 }
 
 function* walkFiles(dir: string): Generator<string> {
@@ -167,14 +319,27 @@ function toArrayBuffer(buf: Buffer): ArrayBuffer {
   ) as ArrayBuffer
 }
 
-function naturalize(ab: ArrayBuffer): Record<string, unknown> {
-  const parsed = dcmjsAny.data.DicomMessage.readFile(ab)
-  return dcmjsAny.data.DicomMetaDictionary.naturalizeDataset(parsed.dict)
+type RawDictElement = { vr?: string; Value?: unknown[] }
+
+// The naturalised (keyword-keyed) record drives grouping and tag capture; the
+// raw dict is kept alongside because it is the only faithful view of private
+// elements (naturalisation drops their VRs — an empty _vrMap).
+export type ParsedFile = {
+  record: Record<string, unknown>
+  rawDict: Record<string, RawDictElement>
 }
 
-function parseFull(path: string): Record<string, unknown> | null {
+function parseParts(ab: ArrayBuffer): ParsedFile {
+  const parsed = dcmjsAny.data.DicomMessage.readFile(ab)
+  return {
+    record: dcmjsAny.data.DicomMetaDictionary.naturalizeDataset(parsed.dict),
+    rawDict: parsed.dict as Record<string, RawDictElement>,
+  }
+}
+
+function parseFull(path: string): ParsedFile | null {
   try {
-    return naturalize(toArrayBuffer(readFileSync(path)))
+    return parseParts(toArrayBuffer(readFileSync(path)))
   } catch {
     return null
   }
@@ -213,7 +378,7 @@ function findPixelDataOffset(prefix: Buffer): number {
 // read, truncated at the PixelData element, and parsed with an empty PixelData.
 // Lets describe handle multi-GB files (where readFileSync would OOM). Returns
 // null for implicit-VR files or any file whose header is not in the prefix.
-export function readHeaderOnly(path: string): Record<string, unknown> | null {
+export function readHeaderOnly(path: string): ParsedFile | null {
   let prefix: Buffer
   try {
     const fd = openSync(path, 'r')
@@ -236,7 +401,7 @@ export function readHeaderOnly(path: string): Record<string, unknown> | null {
     EMPTY_OW_PIXEL_DATA,
   ])
   try {
-    return naturalize(toArrayBuffer(headerOnly))
+    return parseParts(toArrayBuffer(headerOnly))
   } catch {
     return null
   }
@@ -452,6 +617,33 @@ type FileRecord = {
   // the walk; hashed into `tags` in a post-walk pass once the salt (which may
   // derive from every study UID) is known.
   uidOriginals?: Record<string, unknown>
+  // Private elements captured as raw { vr, value } forms during the walk;
+  // UI leaves hashed and the forms merged into `tags` post-walk, like
+  // uidOriginals.
+  privateTags?: Record<string, unknown>
+}
+
+// Merge a record's captured private raw forms into its tags — UI leaves
+// hashed when a salt is in play, verbatim otherwise (preserveUids: false).
+function mergePrivateTags(
+  rec: FileRecord,
+  salt: string | undefined,
+  uidMap: Map<string, string>,
+): void {
+  if (!rec.privateTags) return
+  const hashed = Object.fromEntries(
+    Object.entries(rec.privateTags).map(([tag, capture]) => [
+      tag,
+      salt === undefined
+        ? capture
+        : hashRawCaptureUids(
+            capture as { vr: string; value: unknown },
+            salt,
+            uidMap,
+          ),
+    ]),
+  )
+  rec.tags = mergeTags(rec.tags, hashed)
 }
 
 // Stat + parse one scanned file, header-only above the in-memory cap (never
@@ -460,7 +652,7 @@ type FileRecord = {
 function scanFile(path: string): {
   size: number
   large: boolean
-  record: Record<string, unknown> | null
+  parsed: ParsedFile | null
 } | null {
   let size: number
   try {
@@ -470,7 +662,7 @@ function scanFile(path: string): {
   }
   if (size > MAX_STREAM_BYTES) return null
   const large = size > MAX_PIXEL_BYTES
-  return { size, large, record: large ? readHeaderOnly(path) : parseFull(path) }
+  return { size, large, parsed: large ? readHeaderOnly(path) : parseFull(path) }
 }
 
 // The record's preset modality; 'unsupported' when Modality is present but has
@@ -501,6 +693,14 @@ function hashRecordUids(
     }
   }
   rec.tags = mergeTags(rec.tags, hashUidTags(rec.uidOriginals, salt, uidMap))
+}
+
+function warnPrivateBinarySkipped(count: number): void {
+  if (count > 0) {
+    console.warn(
+      `describe: ${count} private element(s) with binary payloads were not captured — binary values cannot ride a JSON spec`,
+    )
+  }
 }
 
 function warnSweptKeepTags(sweptKeepTags: Set<string>): void {
@@ -744,7 +944,7 @@ function emitTree(acc: TreeDirAccum): TreeNode[] {
 function describeTree(
   dir: string,
   options: DescribeOptions,
-  keepKeywords: string[],
+  keep: KeepPlan,
 ): DescribeResult {
   const root: TreeDirAccum = { dirs: new Map(), files: [] }
   const stats = {
@@ -752,7 +952,9 @@ function describeTree(
     skipped: 0,
     unknownModality: 0,
     nonDicomFiles: 0,
+    privateBinarySkipped: 0,
   }
+  const privateSkipped = { count: 0 }
   const studyUids = new Set<string>()
   const dicomLeaves: DicomLeaf[] = []
 
@@ -762,7 +964,8 @@ function describeTree(
       stats.skipped++
       continue
     }
-    const { size, large, record } = scanned
+    const { size, large, parsed } = scanned
+    const record = parsed?.record
     const studyUid = record?.StudyInstanceUID
     const seriesUid = record?.SeriesInstanceUID
     const relDirs = relative(dir, path).split(sep).slice(0, -1)
@@ -809,9 +1012,13 @@ function describeTree(
         modality,
         tags: mergeTags(
           instanceNumber,
-          keepKeywords.length ? extractTags(record, keepKeywords) : undefined,
+          keep.keywords.length ? extractTags(record, keep.keywords) : undefined,
         ),
         uidOriginals: collectUidOriginals(record),
+        privateTags:
+          keep.capturingPrivate && parsed
+            ? capturePrivateTags(parsed.rawDict, keep, privateSkipped)
+            : undefined,
       },
       studyUid,
       seriesUid,
@@ -829,12 +1036,15 @@ function describeTree(
   const sweptKeepTags = new Set<string>()
   for (const { rec, studyUid, seriesUid } of dicomLeaves) {
     hashRecordUids(rec, salt, uidMap, sweptKeepTags)
+    mergePrivateTags(rec, salt, uidMap)
     rec.tags = mergeTags(rec.tags, {
       StudyInstanceUID: hashUidVia(uidMap, salt, studyUid),
       SeriesInstanceUID: hashUidVia(uidMap, salt, seriesUid),
     })
   }
   warnSweptKeepTags(sweptKeepTags)
+  stats.privateBinarySkipped = privateSkipped.count
+  warnPrivateBinarySkipped(privateSkipped.count)
 
   const spec: DatasetSpec = { tree: emitTree(root), uidSalt: salt }
   validateDatasetSpec(spec)
@@ -848,7 +1058,7 @@ export function describeDirectory(
   dir: string,
   options: DescribeOptions = {},
 ): DescribeResult {
-  const keepKeywords = options.keepTags ? resolveKeepTags(options.keepTags) : []
+  const keep = buildKeepPlan(options)
 
   const preserveUids = options.preserveUids ?? true
   if (options.captureTree) {
@@ -857,14 +1067,16 @@ export function describeDirectory(
         'describe: captureTree requires preserveUids — the captured tree carries its grouping as hashed UID tags',
       )
     }
-    return describeTree(dir, options, keepKeywords)
+    return describeTree(dir, options, keep)
   }
   // One map for the whole tree — same source UID → same synthetic everywhere.
   const uidMap = new Map<string, string>()
 
-  // Per-file records are needed for the instances form (kept tags) and for
-  // hashed per-file UIDs; otherwise we collapse on the fly (see SeriesAccum).
-  const useRecords = keepKeywords.length > 0 || preserveUids
+  // Per-file records are needed for the instances form (kept/private tags)
+  // and for hashed per-file UIDs; otherwise we collapse on the fly (see
+  // SeriesAccum).
+  const useRecords =
+    keep.keywords.length > 0 || preserveUids || keep.capturingPrivate
 
   const tolerance = options.sizeTolerance ?? 0
   if (!Number.isFinite(tolerance) || tolerance < 0) {
@@ -879,7 +1091,9 @@ export function describeDirectory(
     skipped: 0,
     unknownModality: 0,
     nonDicomFiles: 0,
+    privateBinarySkipped: 0,
   }
+  const privateSkipped = { count: 0 }
 
   // Sort paths for deterministic output independent of filesystem order.
   for (const path of [...walkFiles(dir)].sort()) {
@@ -888,7 +1102,8 @@ export function describeDirectory(
       stats.skipped++
       continue
     }
-    const { size, large, record } = scanned
+    const { size, large, parsed } = scanned
+    const record = parsed?.record
     const studyUid = record?.StudyInstanceUID
     const seriesUid = record?.SeriesInstanceUID
     if (
@@ -905,8 +1120,8 @@ export function describeDirectory(
     if (preset === 'unsupported') stats.unknownModality++
     const modality = preset === 'unsupported' ? undefined : preset
 
-    const keptTags = keepKeywords.length
-      ? extractTags(record, keepKeywords)
+    const keptTags = keep.keywords.length
+      ? extractTags(record, keep.keywords)
       : undefined
     // UIDs are captured raw here and hashed after the walk, once the salt
     // (which may derive from every study UID) is known.
@@ -924,6 +1139,10 @@ export function describeDirectory(
       modality,
       tags: keptTags,
       uidOriginals,
+      privateTags:
+        keep.capturingPrivate && parsed
+          ? capturePrivateTags(parsed.rawDict, keep, privateSkipped)
+          : undefined,
     }
 
     let study = studies.get(studyUid)
@@ -944,22 +1163,29 @@ export function describeDirectory(
   }
 
   // Salt is known only now: absent an explicit one, it derives from the study
-  // UIDs gathered during the walk. Hash each file's captured UIDs into its tags.
+  // UIDs gathered during the walk. Hash each file's captured UIDs into its
+  // tags, and merge captured private raw forms (UI leaves hashed under the
+  // same salt; verbatim when preserveUids is off).
   const salt = preserveUids
     ? (options.uidSalt ?? deriveSalt([...studies.keys()]))
     : undefined
-  if (salt !== undefined) {
+  if (salt !== undefined || keep.capturingPrivate) {
     const sweptKeepTags = new Set<string>()
     for (const study of studies.values()) {
       for (const series of study.values()) {
         if (!Array.isArray(series)) continue
         for (const rec of series) {
-          hashRecordUids(rec, salt, uidMap, sweptKeepTags)
+          if (salt !== undefined) {
+            hashRecordUids(rec, salt, uidMap, sweptKeepTags)
+          }
+          mergePrivateTags(rec, salt, uidMap)
         }
       }
     }
     warnSweptKeepTags(sweptKeepTags)
   }
+  stats.privateBinarySkipped = privateSkipped.count
+  warnPrivateBinarySkipped(privateSkipped.count)
 
   // With preserveUids, emit the hashed group UIDs at study/series level (the
   // per-file SOP/FrameOfReference UIDs already ride the record tags above).
