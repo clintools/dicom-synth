@@ -18,8 +18,8 @@ Releases are automated with [semantic-release](https://semantic-release.gitbook.
 
 ```bash
 pnpm add dicom-synth@latest dcmjs
-node -e "import('dicom-synth').then(m => console.log(typeof m.buildSyntheticCtBuffer))"
-npx dicom-synth-write ./out
+node -e "import('dicom-synth').then(m => console.log(typeof m.generateCollectionFromSpec))"
+npx dicom-synth-generate --schema-inline '{"entries":[{"type":"valid-image"}]}' --out ./out
 npx dicom-synth-fetch pydicom-CT-small
 ```
 
