@@ -1,3 +1,4 @@
+import { toArrayBuffer } from '../bytes.js'
 import { dcmjs } from '../loadDcmjs.js'
 import type { ViolationClass } from '../schema/types.js'
 import type { RawElementMap } from './generator.js'
@@ -21,12 +22,7 @@ function parseBuffer(buffer: Buffer): {
   dict: unknown
   write: (opts?: Record<string, unknown>) => ArrayBuffer
 } {
-  // DicomMessage.readFile expects an ArrayBuffer
-  const ab = buffer.buffer.slice(
-    buffer.byteOffset,
-    buffer.byteOffset + buffer.byteLength,
-  ) as ArrayBuffer
-  return dcmjsAny.data.DicomMessage.readFile(ab)
+  return dcmjsAny.data.DicomMessage.readFile(toArrayBuffer(buffer))
 }
 
 function reserialize(parsed: {

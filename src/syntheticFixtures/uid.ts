@@ -42,14 +42,10 @@ function lcg(seed: number): () => number {
 export const PARAMETRIC_STREAM_OFFSET = 0x85ebca6b
 
 // All seeded streams derive their LCG seed here; the offset separates stream
-// domains and the prime multipliers separate indices within a domain.
-export function seededStream(
-  seed: number,
-  offset: number,
-  a: number,
-  b: number,
-): () => number {
-  return lcg((seed * 999983 + offset + a * 1000003 + b * 7919) >>> 0)
+// domains so independent consumers of the same dataset seed draw disjoint
+// sequences.
+export function seededStream(seed: number, offset: number): () => number {
+  return lcg((seed * 999983 + offset) >>> 0)
 }
 
 export type GroupUidGenerator = {

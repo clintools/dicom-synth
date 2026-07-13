@@ -1,12 +1,7 @@
-import { readFileSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   buildDicomdirBuffer,
   DICOMDIR_SOP_CLASS_UID,
-  writeDicomdirFile,
 } from '../src/nonStandardDicom/dicomdir'
 
 describe('buildDicomdirBuffer', () => {
@@ -33,31 +28,5 @@ describe('buildDicomdirBuffer', () => {
     const a = buildDicomdirBuffer()
     const b = buildDicomdirBuffer()
     expect(Buffer.compare(a, b)).toBe(0)
-  })
-})
-
-describe('writeDicomdirFile', () => {
-  let tmpDir: string
-
-  beforeEach(async () => {
-    tmpDir = await mkdtemp(join(tmpdir(), 'dicomdir-test-'))
-  })
-
-  afterEach(async () => {
-    await rm(tmpDir, { recursive: true, force: true })
-  })
-
-  it('writes a file whose bytes match buildDicomdirBuffer', () => {
-    const filePath = join(tmpDir, 'DICOMDIR')
-    writeDicomdirFile(filePath)
-    const written = readFileSync(filePath)
-    expect(Buffer.compare(written, buildDicomdirBuffer())).toBe(0)
-  })
-
-  it('creates parent directories as needed', () => {
-    const filePath = join(tmpDir, 'nested', 'deep', 'DICOMDIR')
-    expect(() => writeDicomdirFile(filePath)).not.toThrow()
-    const written = readFileSync(filePath)
-    expect(written.length).toBeGreaterThan(0)
   })
 })

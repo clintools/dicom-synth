@@ -8,6 +8,8 @@ import {
   statSync,
 } from 'node:fs'
 import { basename, extname, join, relative, sep } from 'node:path'
+import { toArrayBuffer } from '../bytes.js'
+import { buildHexToKeyword } from '../dicomDictionary.js'
 import { dcmjs } from '../loadDcmjs.js'
 import { MAX_PIXEL_BYTES, MAX_STREAM_BYTES } from '../schema/limits.js'
 import type {
@@ -21,6 +23,7 @@ import type {
   TreeNode,
 } from '../schema/types.js'
 import {
+  HEX_TAG_RE,
   isPrivateHexTag,
   positionalName,
   validateDatasetSpec,
@@ -38,7 +41,6 @@ const dcmjsAny = dcmjs as unknown as {
   }
 }
 
-const HEX_TAG_RE = /^[0-9a-fA-F]{8}$/
 const SUPPORTED_MODALITIES = new Set<Modality>(['CT', 'PT', 'MR', 'CR'])
 
 // Modality type-1 preset attributes — owned by the modality preset, so dropped
@@ -108,19 +110,6 @@ export type DescribeResult = {
     // (binary bytes, or the NaN/null dcmjs emits for unparseable values).
     privateBinarySkipped: number
   }
-}
-
-function buildHexToKeyword(): Map<string, string> {
-  const map = new Map<string, string>()
-  const nm = dcmjsAny.data.DicomMetaDictionary.nameMap
-  if (!nm) return map
-  for (const [keyword, info] of Object.entries(nm)) {
-    if (info?.tag) {
-      const hex = info.tag.replace(/[(,)]/g, '').toUpperCase()
-      if (hex.length === 8) map.set(hex, keyword)
-    }
-  }
-  return map
 }
 
 // The two capture routes resolved from keepTags/keepPrivateTags: keyword tags
@@ -310,13 +299,6 @@ function* walkFiles(dir: string): Generator<string> {
       yield path
     }
   }
-}
-
-function toArrayBuffer(buf: Buffer): ArrayBuffer {
-  return buf.buffer.slice(
-    buf.byteOffset,
-    buf.byteOffset + buf.byteLength,
-  ) as ArrayBuffer
 }
 
 type RawDictElement = { vr?: string; Value?: unknown[] }
