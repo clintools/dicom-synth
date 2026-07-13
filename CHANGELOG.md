@@ -1,3 +1,10 @@
+# [1.20.0](https://github.com/clintools/dicom-synth/compare/v1.19.0...v1.20.0) (2026-07-13)
+
+
+### Features
+
+* add relativePath to the collection write manifest ([5964f70](https://github.com/clintools/dicom-synth/commit/5964f7083a227bf953fb55ae6cf77b84bc41f73c))
+
 # [1.18.0](https://github.com/clintools/dicom-synth/compare/v1.17.0...v1.18.0) (2026-07-12)
 
 
