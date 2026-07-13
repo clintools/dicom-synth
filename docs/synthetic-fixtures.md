@@ -60,7 +60,8 @@ const manifest = await writeCollectionFromSpec(
   { entries: [{ type: 'valid-image', count: 5 }], seed: 42 },
   './fixtures/generated',
 )
-// manifest: Array<{ path: string; type: string; index: number }>
+// manifest: Array<{ path: string; relativePath: string; type: string; index: number }>
+// path is absolute; relativePath is the file's path within the collection root.
 ```
 
 The shape of the spec these accept is the [schema reference](./schema-reference.md).
