@@ -507,7 +507,7 @@ describe('validateDatasetSpec — large-image entry', () => {
       validateDatasetSpec({
         entries: [{ type: 'valid-image', targetBytes: 600 * MB }],
       }),
-    ).toThrow(/only supported for type "large-image"/)
+    ).toThrow(/targetBytes: not supported for type "valid-image"/)
   })
 
   it('allows large-image inside a series', () => {
@@ -522,5 +522,63 @@ describe('validateDatasetSpec — large-image entry', () => {
         ],
       }),
     ).not.toThrow()
+  })
+})
+
+describe('validateDatasetSpec — entry field allowlist', () => {
+  it('rejects an unknown/typo field on an image type', () => {
+    expect(() =>
+      validateDatasetSpec({
+        entries: [{ type: 'valid-image', modalty: 'CT' }],
+      }),
+    ).toThrow(/modalty: not supported for type "valid-image"/)
+  })
+
+  it('rejects an image-only field on non-dicom', () => {
+    expect(() =>
+      validateDatasetSpec({ entries: [{ type: 'non-dicom', rows: 4 }] }),
+    ).toThrow(/rows: not supported for type "non-dicom"/)
+  })
+
+  it('rejects any extra field on fake-signature and dicomdir', () => {
+    expect(() =>
+      validateDatasetSpec({ entries: [{ type: 'fake-signature', tags: {} }] }),
+    ).toThrow(/tags: not supported for type "fake-signature"/)
+    expect(() =>
+      validateDatasetSpec({ entries: [{ type: 'dicomdir', modality: 'CT' }] }),
+    ).toThrow(/modality: not supported for type "dicomdir"/)
+  })
+
+  it('rejects geometry/violations/transferSyntax fields on large-image', () => {
+    for (const [field, value] of [
+      ['rows', 512],
+      ['columns', 512],
+      ['frames', 4],
+      ['targetSizeKb', 100],
+      ['transferSyntax', 'explicit-vr-little-endian'],
+      ['violations', ['uid-too-long']],
+    ] as const) {
+      expect(() =>
+        validateDatasetSpec({
+          entries: [
+            { type: 'large-image', targetBytes: 600 * MB, [field]: value },
+          ],
+        }),
+      ).toThrow(new RegExp(`${field}: not supported for type "large-image"`))
+    }
+  })
+
+  it('accepts the tree-only name field on a file node', () => {
+    expect(() =>
+      validateDatasetSpec({
+        tree: [{ type: 'valid-image', name: 'scan.dcm' }],
+      }),
+    ).not.toThrow()
+  })
+
+  it('rejects an unknown field on a tree file node', () => {
+    expect(() =>
+      validateDatasetSpec({ tree: [{ type: 'valid-image', nam: 'scan.dcm' }] }),
+    ).toThrow(/nam: not supported for type "valid-image"/)
   })
 })
