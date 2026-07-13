@@ -1,3 +1,13 @@
+# [2.0.0](https://github.com/clintools/dicom-synth/compare/v1.20.0...v2.0.0) (2026-07-13)
+
+
+* feat!: reject unknown entry fields with per-type allowlists ([cfd8ba8](https://github.com/clintools/dicom-synth/commit/cfd8ba8b097878d9deabaf27ee66a89d188063c8))
+
+
+### BREAKING CHANGES
+
+* validateDatasetSpec now rejects specs with unknown or unsupported entry fields — previously silently ignored. Fix typos or remove extra fields.
+
 # [1.20.0](https://github.com/clintools/dicom-synth/compare/v1.19.0...v1.20.0) (2026-07-13)
 
 
