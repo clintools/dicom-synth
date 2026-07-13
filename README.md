@@ -2,10 +2,6 @@
 
 Schema-driven **synthetic DICOM fixture generation** and **public fixture** fetch/cache. Portable and independent of any consumer (e.g. [dicom-curate](https://github.com/clintools/dicom-curate)).
 
-## Disclaimer
-
-⚠️ Still in early release. APIs may change without notice. Version 2+ will be the first stable release ⚠️
-
 ## Install
 
 ```bash

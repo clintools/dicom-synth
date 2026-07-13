@@ -21,16 +21,36 @@ import type {
   ViolationClass,
 } from './types.js'
 
-// Image-generating types: accept the image-only fields and can be grouped into series.
+// Entry fields each type accepts, beyond the universal `type`/`count`. The
+// allowlist is authoritative: validateEntry rejects any other field, so a new
+// image-only field is added here once rather than to per-type denylists (and
+// typos/unknown fields surface instead of being silently ignored).
+const IMAGE_FIELDS = [
+  'modality',
+  'rows',
+  'columns',
+  'frames',
+  'targetSizeKb',
+  'tags',
+  'violations',
+  'transferSyntax',
+] as const
+
 const TYPE_CAPABILITIES = {
-  'valid-image': { image: true },
-  'invalid-uid-image': { image: true },
-  'vendor-warnings-image': { image: true },
-  'large-image': { image: true },
-  'fake-signature': { image: false },
-  'non-dicom': { image: false },
-  dicomdir: { image: false },
-} as const satisfies Record<FileSpec['type'], { image: boolean }>
+  'valid-image': { image: true, fields: IMAGE_FIELDS },
+  'invalid-uid-image': { image: true, fields: IMAGE_FIELDS },
+  'vendor-warnings-image': { image: true, fields: IMAGE_FIELDS },
+  'large-image': { image: true, fields: ['targetBytes', 'modality', 'tags'] },
+  'fake-signature': { image: false, fields: [] },
+  'non-dicom': {
+    image: false,
+    fields: ['content', 'targetSizeKb', 'targetBytes'],
+  },
+  dicomdir: { image: false, fields: [] },
+} as const satisfies Record<
+  FileSpec['type'],
+  { image: boolean; fields: readonly string[] }
+>
 
 // Image-generating types participate in UID grouping (studies/series and
 // role-marked tree directories); other types merely occupy their location.
@@ -248,20 +268,6 @@ function validateLargeImageEntry(
   e: Record<string, unknown>,
   path: string,
 ): void {
-  for (const field of [
-    'rows',
-    'columns',
-    'frames',
-    'targetSizeKb',
-    'violations',
-    'transferSyntax',
-  ] as const) {
-    if (field in e) {
-      throw new Error(
-        `${path}.${field}: not supported for type "large-image" — use targetBytes`,
-      )
-    }
-  }
   if (!('targetBytes' in e)) {
     throw new Error(`${path}.targetBytes: is required for type "large-image"`)
   }
@@ -320,7 +326,11 @@ function validateTagKey(key: string, path: string): void {
   }
 }
 
-function validateEntry(entry: unknown, path: string): EntrySpec {
+function validateEntry(
+  entry: unknown,
+  path: string,
+  extraAllowedFields: readonly string[] = [],
+): EntrySpec {
   if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
     throw new Error(`${path}: must be an object`)
   }
@@ -332,6 +342,18 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
   const type = e.type as FileSpec['type']
   const caps = TYPE_CAPABILITIES[type]
 
+  const allowed = new Set<string>([
+    'type',
+    'count',
+    ...caps.fields,
+    ...extraAllowedFields,
+  ])
+  for (const field of Object.keys(e)) {
+    if (!allowed.has(field)) {
+      throw new Error(`${path}.${field}: not supported for type "${type}"`)
+    }
+  }
+
   if ('count' in e) validatePositiveInt(e.count, `${path}.count`)
 
   if (type === 'large-image') {
@@ -340,40 +362,8 @@ function validateEntry(entry: unknown, path: string): EntrySpec {
   }
 
   if (type === 'non-dicom') {
-    for (const field of [
-      'modality',
-      'rows',
-      'columns',
-      'frames',
-      'tags',
-      'violations',
-      'transferSyntax',
-    ] as const) {
-      if (field in e)
-        throw new Error(`${path}.${field}: not supported for type "${type}"`)
-    }
     validateNonDicomEntry(e, path)
     return e as unknown as EntrySpec
-  }
-
-  if ('targetBytes' in e) {
-    throw new Error(
-      `${path}.targetBytes: only supported for type "large-image"`,
-    )
-  }
-
-  for (const field of [
-    'modality',
-    'rows',
-    'columns',
-    'frames',
-    'targetSizeKb',
-    'tags',
-    'violations',
-    'transferSyntax',
-  ] as const) {
-    if (!caps.image && field in e)
-      throw new Error(`${path}.${field}: not supported for type "${type}"`)
   }
 
   if ('transferSyntax' in e) {
@@ -729,7 +719,7 @@ function validateTreeNode(
     return
   }
 
-  const e = validateEntry(node, path)
+  const e = validateEntry(node, path, ['name'])
   if ('name' in n) {
     validateNodeName(n.name, `${path}.name`)
     if ((e.count ?? 1) > 1) {
@@ -942,7 +932,10 @@ function validateParametricStudies(
 }
 
 function validateEdgeCase(edgeCase: unknown, path: string): ParametricEdgeCase {
-  const e = validateEntry(edgeCase, path) as Record<string, unknown>
+  const e = validateEntry(edgeCase, path, ['frequency']) as Record<
+    string,
+    unknown
+  >
 
   if ('frequency' in e) {
     if ('count' in e) {
