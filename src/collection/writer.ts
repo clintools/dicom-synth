@@ -44,7 +44,11 @@ export type GeneratedFile = {
 }
 
 export type CollectionManifest = Array<{
+  // Absolute path to the written file.
   path: string
+  // Path relative to the collection root (the filename for flat layouts, a
+  // study-NNN/series-NNN/… path for grouped ones) — mirrors GeneratedFile.
+  relativePath: string
   type: FileSpec['type']
   index: number
 }>
@@ -649,6 +653,7 @@ export async function writeCollectionFromSpec(
     }
     manifest.push({
       path: filePath,
+      relativePath: plan.relativePath,
       type: plan.fileSpec.type,
       index: plan.index,
     })

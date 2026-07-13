@@ -406,6 +406,12 @@ describe('writeCollectionFromSpec — layer 3', () => {
     expect(manifest).toHaveLength(3)
     expect(manifest[0].type).toBe('valid-image')
     expect(manifest[2].type).toBe('non-dicom')
+    // Flat layout: relativePath is the bare filename, and the absolute path
+    // ends with it.
+    for (const entry of manifest) {
+      expect(entry.relativePath).not.toContain('/')
+      expect(entry.path.endsWith(entry.relativePath)).toBe(true)
+    }
   })
 
   it('creates the output directory if it does not exist', async () => {
@@ -457,6 +463,12 @@ describe('writeCollectionFromSpec — layer 3', () => {
     expect(readdirSync(join(tmpDir, 'study-001', 'series-001')).sort()).toEqual(
       ['00001.dcm', '00002.dcm'],
     )
+    // Manifest relativePath carries the nested layout path.
+    expect(manifest.map((m) => m.relativePath).sort()).toEqual([
+      join('study-001', 'series-001', '00001.dcm'),
+      join('study-001', 'series-001', '00002.dcm'),
+      join('study-001', 'series-002', '00001.dcm'),
+    ])
   })
 })
 
