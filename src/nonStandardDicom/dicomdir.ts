@@ -1,6 +1,3 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
-
 export const DICOMDIR_SOP_CLASS_UID = '1.2.840.10008.1.3.10'
 
 /**
@@ -33,13 +30,4 @@ export function buildDicomdirBuffer(): Buffer {
   off += uid.length
 
   return buf.subarray(0, off)
-}
-
-/**
- * Write a minimal DICOMDIR-signature file to `filePath`.
- * The parent directory is created if it does not exist.
- */
-export function writeDicomdirFile(filePath: string): void {
-  mkdirSync(resolve(filePath, '..'), { recursive: true })
-  writeFileSync(filePath, buildDicomdirBuffer())
 }

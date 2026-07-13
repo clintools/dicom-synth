@@ -1,3 +1,4 @@
+import { toArrayBuffer } from '../../src/bytes'
 import { dcmjs } from '../../src/loadDcmjs'
 
 const dcmjsAny = dcmjs as unknown as {
@@ -9,13 +10,6 @@ const dcmjsAny = dcmjs as unknown as {
       naturalizeDataset: (ds: unknown) => Record<string, unknown>
     }
   }
-}
-
-function toArrayBuffer(buffer: Buffer): ArrayBuffer {
-  return buffer.buffer.slice(
-    buffer.byteOffset,
-    buffer.byteOffset + buffer.byteLength,
-  ) as ArrayBuffer
 }
 
 // Parse a generated DICOM buffer into a naturalised (keyword-keyed) dataset.

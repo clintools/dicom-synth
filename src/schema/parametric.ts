@@ -45,7 +45,7 @@ function fraction(next: () => number): number {
 export function resolveParametricSpec(spec: ParametricSpec): DatasetSpec {
   const validated = validateParametricSpec(spec)
   const seed = validated.seed ?? randomBytes(4).readUInt32BE(0)
-  const next = seededStream(seed, PARAMETRIC_STREAM_OFFSET, 0, 0)
+  const next = seededStream(seed, PARAMETRIC_STREAM_OFFSET)
   const params = validated.studies
 
   const studies: StudySpec[] = []

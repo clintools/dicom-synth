@@ -1,4 +1,5 @@
 import type * as Dcmjs from 'dcmjs'
+import { buildHexToKeyword } from '../dicomDictionary.js'
 import { dcmjs } from '../loadDcmjs.js'
 import { buildDicomdirBuffer } from '../nonStandardDicom/dicomdir.js'
 import type {
@@ -48,28 +49,8 @@ const TRANSFER_SYNTAX_UID: Record<TransferSyntax, string> = {
   'implicit-vr-little-endian': '1.2.840.10008.1.2',
 }
 
-// Build a reverse map from 8-hex-char tag (e.g. "00080060") to DICOM keyword.
-// Used to resolve the tags escape hatch at generation time.
-function buildTagToKeyword(): Map<string, string> {
-  const map = new Map<string, string>()
-  const nm = (
-    dcmjs as unknown as {
-      data?: {
-        DicomMetaDictionary?: { nameMap?: Record<string, { tag?: string }> }
-      }
-    }
-  ).data?.DicomMetaDictionary?.nameMap
-  if (!nm) return map
-  for (const [keyword, info] of Object.entries(nm)) {
-    if (info?.tag) {
-      const hex = info.tag.replace(/[(,)]/g, '').toUpperCase()
-      if (hex.length === 8) map.set(hex, keyword)
-    }
-  }
-  return map
-}
-
-const tagToKeyword = buildTagToKeyword()
+// Resolves the raw hex tag escape hatch to keywords at generation time.
+const tagToKeyword = buildHexToKeyword()
 
 // A dict-level element in dcmjs's raw shape; SQ items are maps of hex tags to
 // further RawElements. Assigned verbatim onto the serialised dict, bypassing
