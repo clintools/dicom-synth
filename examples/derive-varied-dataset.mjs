@@ -47,12 +47,16 @@ const SERIES_DESCRIPTIONS = {
   CR: ['CHEST PA', 'CHEST LAT'],
 }
 
-// Variation rates — roughly "one in N". 0 disables that layer. Tuned for a
-// full trial dataset: across 20k files that is ~100 strays and ~20 bad images.
-// Lower them hard (20 / 10) when trying this on a handful of files, or nothing
-// will fire and it will look broken.
-const STRAY_RATE = 200 // stray non-image file, per image file
-const VIOLATION_RATE = 1000 // deliberately non-conformant image, per image file
+// Set true for a run expected to pass end to end: no malformed files, no
+// non-conformant images, no trailing dots. Mixed transfer syntaxes stay on —
+// implicit VR is valid DICOM and should not fail anything.
+const CLEAN_RUN = false
+
+// Variation rates — roughly "one in N". Tuned for a full trial dataset: across
+// 20k files that is ~100 strays and ~20 bad images. Lower them hard (20 / 10)
+// when trying this on a handful of files, or nothing will fire.
+const STRAY_RATE = CLEAN_RUN ? 0 : 200 // stray non-image file, per image file
+const VIOLATION_RATE = CLEAN_RUN ? 0 : 1000 // bad image, per image file
 const IMPLICIT_VR_RATE = 6 // series written implicit-VR, per series
 
 // Stray files a real archive accumulates, plus two malformed images. Each is a
@@ -73,8 +77,8 @@ const VIOLATIONS = [
 ]
 
 // Trailing dots on every directory — a known Chrome File System Access
-// failure, so they belong in an upload test. Empty the array for plain paths.
-const PATH_QUIRKS = ['trailing-dot']
+// failure, so they belong in a test that is probing for problems.
+const PATH_QUIRKS = CLEAN_RUN ? [] : ['trailing-dot']
 
 const [source, outDir, name = '89Zr-TLX000-000-synth'] = process.argv.slice(2)
 if (!source || !outDir) {
