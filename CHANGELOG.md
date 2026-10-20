@@ -1,3 +1,10 @@
+## [2.0.1](https://github.com/clintools/dicom-synth/compare/v2.0.0...v2.0.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **deps:** align @vitest/coverage-v8 with vitest 4 ([3593136](https://github.com/clintools/dicom-synth/commit/359313622d9c1b39b9f7f4ea985508ff8b7acb9c))
+
 # [2.0.0](https://github.com/clintools/dicom-synth/compare/v1.20.0...v2.0.0) (2026-07-13)
 
 
