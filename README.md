@@ -43,13 +43,12 @@ The full input shape (image types, sizing, modalities, grouping, violations, …
 | [CLI reference](./docs/cli.md) | `dicom-synth-generate`, `dicom-synth-describe`, `dicom-synth-fetch` |
 | [Public fixtures](./docs/public-fixtures.md) | Catalog-backed fetch/cache with SHA-256 verification |
 | [Development](./docs/development.md) | Scripts, hooks, and source layout |
-| [Examples](./examples/README.md) | Runnable example specs and the shape converter |
+| [Examples](./examples/README.md) | Runnable example specs, the shape converter, and the real-dataset derivation script |
 
 ## Future development
 
-- **Very large (streamed) files** — synthesise single DICOMs beyond the 512 MB in-memory cap via a disk-only streaming writer
 - **Dimension edge-case recipes** — documented presets for geometry pathologies (1×65535 strips, high frame counts)
-- **Per-file tag variance templating** — patterned overrides like `"PatientID": "P{index}"` for shape replication
+- **Varied identity on described trees** — `describe --tree` reproduces a real dataset's shape, but every file regenerates with the same `SYNTH_PID` / `Synthetic study`, so N real subjects collapse to one apparent subject. The `{studyIndex}` / `{seriesIndex}` templates already solve this for `studies`; tree files sit outside those groups, so the tokens are unavailable. Resolving them against tree `role` markers — or letting `describe` stamp a template per group — would retire [`examples/derive-varied-dataset.mjs`](./examples/derive-varied-dataset.mjs)
 - **Compressed transfer syntaxes** — JPEG-LS, JPEG 2000, RLE
 - **Private fixture catalogues** — same SHA-256 fetch/cache pattern for credentials-backed sources (e.g. S3)
 
