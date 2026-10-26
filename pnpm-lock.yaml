@@ -39,8 +39,8 @@ importers:
         specifier: 4.1.12
         version: 4.1.12(vitest@4.1.12)
       dcmjs:
-        specifier: ^0.51.1
-        version: 0.51.1
+        specifier: ^0.52.0
+        version: 0.52.2
       esbuild:
         specifier: ^0.28.1
         version: 0.28.2
@@ -100,8 +100,8 @@ packages:
     engines: {node: '>=6.0.0'}
     hasBin: true
 
-  '@babel/runtime-corejs3@7.29.7':
-    resolution: {integrity: sha512-ppj9ouYku+RX0ljtgZd+KMO5mkM2bCqg8H2PYAFWnLsHEIKIdRojqbJ2i3eVHrisuxy7nOFCmngTDdWtUCdXUQ==}
+  '@babel/runtime-corejs3@7.29.2':
+    resolution: {integrity: sha512-Lc94FOD5+0aXhdb0Tdg3RUtqT6yWbI/BbFWvlaSJ3gAb9Ks+99nHRDKADVqC37er4eCB0fHyWT+y+K3QOvJKbw==}
     engines: {node: '>=6.9.0'}
 
   '@babel/types@7.29.7':
@@ -1168,8 +1168,9 @@ packages:
     resolution: {integrity: sha512-x8dy3RnvYdlUcPOjkEHqozhiwzKNSq7GcPuXFbnyMOCHxX8V3OgIg/pYuabl2sbUPfIJaeAQB7PMOK8DFIdoRA==}
     engines: {node: '>=12'}
 
-  dcmjs@0.51.1:
-    resolution: {integrity: sha512-6hJbygOiWvIZHtAh/uRkNU119q3SE/+76lMvq9g3bGq8wky66sHGxJMjB2g/86ewOYmVMrAaIr4Q8tcJEQlwJg==}
+  dcmjs@0.52.2:
+    resolution: {integrity: sha512-jt+kyCNcjCNcfQNDDph26NZUBh3alOEM36ao918aotkb2WxkUq3OVu84q3EOCsJcwkMfsEiojiCA8+RYaCR4Ag==}
+    engines: {node: '>=22.13'}
 
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
@@ -2610,7 +2611,7 @@ snapshots:
     dependencies:
       '@babel/types': 7.29.7
 
-  '@babel/runtime-corejs3@7.29.7':
+  '@babel/runtime-corejs3@7.29.2':
     dependencies:
       core-js-pure: 3.49.0
 
@@ -3524,9 +3525,9 @@ snapshots:
     dependencies:
       type-fest: 1.4.0
 
-  dcmjs@0.51.1:
+  dcmjs@0.52.2:
     dependencies:
-      '@babel/runtime-corejs3': 7.29.7
+      '@babel/runtime-corejs3': 7.29.2
       adm-zip: 0.5.17
       gl-matrix: 3.4.4
       lodash.clonedeep: 4.5.0
